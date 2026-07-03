@@ -55,7 +55,7 @@ This project requires the `wren` CLI. Install with your data source extra:
 pip install "wrenai[postgres,memory,ui]"
 ```
 
-Replace `postgres` with your data source (`mysql`, `bigquery`, `snowflake`, `clickhouse`, `trino`, `mssql`, `databricks`, `redshift`, `spark`, `athena`, `oracle`). The `memory` extra upgrades recall to semantic (embedding) search — without it, `memory store` / `index` / `recall` still work over the `knowledge/` files. `ui` enables the interactive UI.
+Replace `postgres` with your data source (`mysql`, `bigquery`, `snowflake`, `clickhouse`, `trino`, `mssql`, `databricks`, `redshift`, `spark`, `athena`, `oracle`, `maxcompute`). The `memory` extra upgrades recall to semantic (embedding) search — without it, `memory store` / `index` / `recall` still work over the `knowledge/` files. `ui` enables the interactive UI.
 
 See https://docs.getwren.ai/oss/engine/get_started/installation for full setup.
 
@@ -481,6 +481,7 @@ _VALID_DIALECTS = {
     "duckdb",
     "gcs_file",
     "local_file",
+    "maxcompute",
     "minio_file",
     "mssql",
     "mysql",

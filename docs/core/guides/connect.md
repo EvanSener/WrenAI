@@ -33,6 +33,7 @@ If you have an AI coding agent installed, the `/wren` skill drives the whole thi
 | Oracle | `oracle` |
 | Athena | `athena` |
 | Spark | `spark` |
+| MaxCompute | `maxcompute` |
 
 Install one or more extras together:
 

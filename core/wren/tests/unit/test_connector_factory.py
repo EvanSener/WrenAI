@@ -22,3 +22,18 @@ def test_connector_import_error_has_quoted_wrenai_extra_hint(monkeypatch) -> Non
 
     assert exc.value.error_code == ErrorCode.NOT_IMPLEMENTED
     assert "pip install 'wrenai[mysql]'" in str(exc.value)
+
+
+def test_maxcompute_import_error_points_to_maxcompute_extra(monkeypatch) -> None:
+    def _fake_import_module(name: str):
+        if name == "wren.connector.maxcompute":
+            raise ImportError("No module named 'odps'")
+        raise AssertionError(f"Unexpected import: {name}")
+
+    monkeypatch.setattr(factory.importlib, "import_module", _fake_import_module)
+
+    with pytest.raises(WrenError) as exc:
+        factory.get_connector(DataSource.maxcompute, {})
+
+    assert exc.value.error_code == ErrorCode.NOT_IMPLEMENTED
+    assert "pip install 'wrenai[maxcompute]'" in str(exc.value)

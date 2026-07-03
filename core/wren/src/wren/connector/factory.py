@@ -19,6 +19,7 @@ _REGISTRY: dict[DataSource, str] = {
     DataSource.redshift: "wren.connector.redshift",
     DataSource.spark: "wren.connector.spark",
     DataSource.databricks: "wren.connector.databricks",
+    DataSource.maxcompute: "wren.connector.maxcompute",
     DataSource.trino: "wren.connector.trino",
     DataSource.clickhouse: "wren.connector.clickhouse",
     DataSource.oracle: "wren.connector.oracle",

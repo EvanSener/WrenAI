@@ -24,6 +24,7 @@ pip install 'wrenai[redshift]'     # Redshift
 pip install 'wrenai[spark]'        # Spark
 pip install 'wrenai[athena]'       # Athena
 pip install 'wrenai[oracle]'       # Oracle
+pip install 'wrenai[maxcompute]'   # MaxCompute
 pip install 'wrenai[memory]'       # Schema & query memory (LanceDB)
 pip install 'wrenai[ui]'           # Browser-based profile form (starlette + uvicorn)
 pip install 'wrenai[main]'         # memory + interactive prompts + ui

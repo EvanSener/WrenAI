@@ -58,12 +58,13 @@ redshift = ["redshift_connector"]
 spark = ["pyspark>=3.5"]
 athena = ["pyathena[pandas]>=3"]
 oracle = ["oracledb>=2"]
+maxcompute = ["pyodps>=0.12"]
 memory = ["lancedb>=0.6", "sentence-transformers>=2.2"]
 interactive = ["InquirerPy>=0.3.4"]
 ui = ["starlette>=0.37", "uvicorn>=0.29", "jinja2>=3.1", "python-multipart>=0.0.9"]
 main = ["wrenai[interactive,ui]"]
 all = [
-  "wrenai[postgres,mysql,bigquery,snowflake,clickhouse,trino,mssql,databricks,redshift,athena,oracle,spark,main,memory]",
+  "wrenai[postgres,mysql,bigquery,snowflake,clickhouse,trino,mssql,databricks,redshift,athena,oracle,spark,maxcompute,main,memory]",
 ]
 
 [project.scripts]

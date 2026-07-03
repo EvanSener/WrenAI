@@ -55,7 +55,8 @@ pip install "wren-langchain[postgres,memory]"
 pip install "wren-langchain[bigquery,memory]"
 
 # Available datasource extras: postgres, mysql, bigquery, snowflake,
-# clickhouse, trino, mssql, databricks, redshift, spark, athena, oracle.
+# clickhouse, trino, mssql, databricks, redshift, spark, athena, oracle,
+# maxcompute.
 
 # `memory` extra enables the three memory tools (wren_fetch_context,
 # wren_recall_queries, wren_store_query). Without it the toolkit exposes

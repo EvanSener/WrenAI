@@ -125,3 +125,18 @@ Both formats are accepted. The CLI auto-flattens the envelope format.
   "format": "parquet"
 }
 ```
+
+## MaxCompute
+
+```json
+{
+  "datasource": "maxcompute",
+  "access_id": "LTAI...",
+  "access_key": "secret",
+  "project": "my_project",
+  "endpoint": "https://service.cn-shanghai.maxcompute.aliyun.com/api",
+  "schema": "analytics",
+  "tunnel_endpoint": "https://dt.cn-shanghai.maxcompute.aliyun.com",
+  "quota_name": "default"
+}
+```

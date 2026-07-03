@@ -92,6 +92,21 @@ class AthenaConnectionInfo(BaseConnectionInfo):
     schema_name: str | None = Field(alias="schema_name", default="default")
 
 
+class MaxComputeConnectionInfo(BaseConnectionInfo):
+    access_id: SecretStr = Field(examples=["LTAI..."])
+    access_key: SecretStr = Field(examples=["secret"])
+    project: str = Field(examples=["my_project"])
+    endpoint: str = Field(
+        examples=["https://service.cn-shanghai.maxcompute.aliyun.com/api"]
+    )
+    schema_name: str | None = Field(default=None, alias="schema")
+    tunnel_endpoint: str | None = Field(default=None)
+    quota_name: str | None = Field(default=None)
+    use_instance_tunnel: bool = Field(default=True)
+    limit_instance_tunnel: bool = Field(default=False)
+    hints: dict[str, str] | None = Field(default=None)
+
+
 class CannerConnectionInfo(BaseConnectionInfo):
     host: str = Field(examples=["localhost"])
     port: StrPort = Field(examples=["8080"])
@@ -295,6 +310,7 @@ ConnectionInfo = (
     | ClickHouseConnectionInfo
     | ConnectionUrl
     | DataFusionConnectionInfo
+    | MaxComputeConnectionInfo
     | MSSqlConnectionInfo
     | MySqlConnectionInfo
     | DorisConnectionInfo

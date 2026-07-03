@@ -20,6 +20,7 @@ from wren.model import (
     DorisConnectionInfo,
     GcsFileConnectionInfo,
     LocalFileConnectionInfo,
+    MaxComputeConnectionInfo,
     MinioFileConnectionInfo,
     MSSqlConnectionInfo,
     MySqlConnectionInfo,
@@ -58,6 +59,7 @@ class DataSource(StrEnum):
     duckdb = auto()
     spark = auto()
     databricks = auto()
+    maxcompute = auto()
 
     def get_connection_info(
         self,
@@ -116,6 +118,8 @@ class DataSource(StrEnum):
         match self:
             case DataSource.athena:
                 return AthenaConnectionInfo.model_validate(data)
+            case DataSource.maxcompute:
+                return MaxComputeConnectionInfo.model_validate(data)
             case DataSource.bigquery:
                 if "bigquery_type" in data and data["bigquery_type"] == "project":
                     return BigQueryProjectConnectionInfo.model_validate(data)

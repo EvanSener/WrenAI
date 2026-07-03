@@ -473,6 +473,9 @@ class TestDialectMapping:
     def test_local_file_maps_to_duckdb(self):
         assert get_sqlglot_dialect(DataSource.local_file) == "duckdb"
 
+    def test_maxcompute_maps_to_hive(self):
+        assert get_sqlglot_dialect(DataSource.maxcompute) == "hive"
+
 
 # ---------------------------------------------------------------------------
 # Tests: case-insensitive column & model binding

@@ -27,6 +27,7 @@ from wren.model import (
     DorisConnectionInfo,
     GcsFileConnectionInfo,
     LocalFileConnectionInfo,
+    MaxComputeConnectionInfo,
     MinioFileConnectionInfo,
     MSSqlConnectionInfo,
     MySqlConnectionInfo,
@@ -56,6 +57,7 @@ DATASOURCE_MODELS: dict[str, list[type[BaseConnectionInfo]]] = {
     "duckdb": [LocalFileConnectionInfo],
     "gcs_file": [GcsFileConnectionInfo],
     "local_file": [LocalFileConnectionInfo],
+    "maxcompute": [MaxComputeConnectionInfo],
     "minio_file": [MinioFileConnectionInfo],
     "mssql": [MSSqlConnectionInfo],
     "mysql": [MySqlConnectionInfo],
@@ -133,6 +135,21 @@ _MODEL_UI_OVERRIDES: dict[str, dict[str, dict]] = {
         "role_session_name": {"label": "Role Session Name"},
         "region_name": {"label": "Region"},
         "schema_name": {"label": "Schema"},
+    },
+    "MaxComputeConnectionInfo": {
+        "access_id": {"label": "Access Key ID"},
+        "access_key": {"label": "Access Key Secret"},
+        "schema_name": {"label": "Schema"},
+        "tunnel_endpoint": {"label": "Tunnel Endpoint"},
+        "quota_name": {"label": "Quota Name"},
+        "use_instance_tunnel": {
+            "label": "Use Instance Tunnel",
+            "input_type": "text",
+        },
+        "limit_instance_tunnel": {
+            "label": "Limit Instance Tunnel",
+            "input_type": "text",
+        },
     },
     "CannerConnectionInfo": {
         "pat": {"label": "Personal Access Token"},

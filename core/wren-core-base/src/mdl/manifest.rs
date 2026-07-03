@@ -198,6 +198,7 @@ impl Display for DataSource {
             DataSource::Redshift => write!(f, "REDSHIFT"),
             DataSource::Databricks => write!(f, "DATABRICKS"),
             DataSource::Spark => write!(f, "SPARK"),
+            DataSource::MaxCompute => write!(f, "MAXCOMPUTE"),
         }
     }
 }
@@ -227,6 +228,7 @@ impl FromStr for DataSource {
             "REDSHIFT" => Ok(DataSource::Redshift),
             "DATABRICKS" => Ok(DataSource::Databricks),
             "SPARK" => Ok(DataSource::Spark),
+            "MAXCOMPUTE" => Ok(DataSource::MaxCompute),
             _ => Err(ParsedDataSourceError::new(&format!(
                 "Unknown data source: {}",
                 s

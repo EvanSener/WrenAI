@@ -165,13 +165,18 @@ class WrenEngine:
         if properties:
             processed = frozenset(properties.items())
 
+        manifest_str = _core_compatible_manifest_str(
+            self.manifest_str, self.data_source
+        )
+        core_data_source = _core_compatible_data_source(self.data_source)
+
         try:
             # Extract minimal manifest scoped to tables referenced in the SQL.
             # Use sqlglot (not DataFusion parser) since input is target dialect.
             dialect = get_sqlglot_dialect(self.data_source)
             ast = parse_one(sql, dialect=dialect)
 
-            manifest_json = json.loads(base64.b64decode(self.manifest_str))
+            manifest_json = json.loads(base64.b64decode(manifest_str))
             model_names = {m["name"] for m in manifest_json.get("models", [])}
             view_names = {v["name"] for v in manifest_json.get("views", [])}
             # Views are MDL-defined objects too. Strict mode gates access to
@@ -197,7 +202,7 @@ class WrenEngine:
                 resolved = resolve_model_name(t.name, quoted, queryable_names)
                 tables.append(resolved if resolved is not None else t.name)
 
-            extractor = get_manifest_extractor(self.manifest_str)
+            extractor = get_manifest_extractor(manifest_str)
             manifest = extractor.extract_by(tables)
             effective_manifest = to_json_base64(manifest)
         except WrenError:
@@ -210,14 +215,14 @@ class WrenEngine:
                     phase=ErrorPhase.SQL_PLANNING,
                     metadata={DIALECT_SQL: sql},
                 ) from e
-            effective_manifest = self.manifest_str
+            effective_manifest = manifest_str
 
         try:
             session = get_session_context(
                 effective_manifest,
                 self.function_path,
                 processed,
-                self.data_source.name,
+                core_data_source,
             )
             rewriter = CTERewriter(
                 effective_manifest,
@@ -238,3 +243,21 @@ class WrenEngine:
         if self._connector is None:
             self._connector = get_connector(self.data_source, self.connection_info)
         return self._connector
+
+
+def _core_compatible_data_source(data_source: DataSource) -> str:
+    if data_source == DataSource.maxcompute:
+        return DataSource.datafusion.name
+    return data_source.name
+
+
+def _core_compatible_manifest_str(manifest_str: str, data_source: DataSource) -> str:
+    if data_source != DataSource.maxcompute:
+        return manifest_str
+
+    manifest = json.loads(base64.b64decode(manifest_str))
+    if manifest.get("dataSource") == data_source.value:
+        manifest["dataSource"] = DataSource.datafusion.value
+    if manifest.get("data_source") == data_source.value:
+        manifest["data_source"] = DataSource.datafusion.value
+    return base64.b64encode(json.dumps(manifest).encode()).decode()

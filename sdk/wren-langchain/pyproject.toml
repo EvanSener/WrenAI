@@ -62,6 +62,7 @@ redshift   = ["wrenai[redshift]>=0.7.0"]
 spark      = ["wrenai[spark]>=0.7.0"]
 athena     = ["wrenai[athena]>=0.7.0"]
 oracle     = ["wrenai[oracle]>=0.7.0"]
+maxcompute = ["wrenai[maxcompute]>=0.7.0"]
 
 # ── Memory extra ──────────────────────────────────────────────────────────
 # Required to use the three memory tools (wren_fetch_context,

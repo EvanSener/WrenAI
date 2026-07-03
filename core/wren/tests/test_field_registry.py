@@ -194,6 +194,29 @@ def test_databricks_catalog_field_is_optional():
     assert sp_fields["catalog"].label == "Catalog"
 
 
+def test_maxcompute_fields_and_labels():
+    fields = {f.name: f for f in get_fields("maxcompute")}
+    assert {
+        "access_id",
+        "access_key",
+        "project",
+        "endpoint",
+        "schema_name",
+        "tunnel_endpoint",
+        "quota_name",
+        "use_instance_tunnel",
+        "limit_instance_tunnel",
+    } <= set(fields)
+    assert "hints" not in fields
+    assert fields["access_id"].label == "Access Key ID"
+    assert fields["access_key"].label == "Access Key Secret"
+    assert fields["access_key"].input_type == "password"
+    assert fields["schema_name"].alias == "schema"
+    assert fields["schema_name"].label == "Schema"
+    assert fields["use_instance_tunnel"].default == "true"
+    assert fields["limit_instance_tunnel"].default == "false"
+
+
 def test_fields_match_mcp_web_ui_postgres():
     """Regression: generated postgres fields cover all fields in old DATASOURCE_FIELDS."""
     expected_names = {"host", "port", "database", "user", "password"}
@@ -203,7 +226,14 @@ def test_fields_match_mcp_web_ui_postgres():
 
 def test_fields_match_mcp_web_ui_snowflake():
     """Regression: generated snowflake fields cover all fields in old DATASOURCE_FIELDS."""
-    expected_names = {"user", "password", "account", "database", "sf_schema", "warehouse"}
+    expected_names = {
+        "user",
+        "password",
+        "account",
+        "database",
+        "sf_schema",
+        "warehouse",
+    }
     names = {f.name for f in get_fields("snowflake")}
     assert expected_names <= names
 

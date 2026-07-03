@@ -120,6 +120,8 @@ pub fn data_source(python_binding: proc_macro::TokenStream) -> proc_macro::Token
             Databricks,
             #[serde(alias = "spark")]
             Spark,
+            #[serde(alias = "maxcompute")]
+            MaxCompute,
         }
     };
     proc_macro::TokenStream::from(expanded)
