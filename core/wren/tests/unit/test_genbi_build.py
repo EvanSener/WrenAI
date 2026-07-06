@@ -144,6 +144,9 @@ def test_build_includes_abstract_bi_app_information_architecture(
     ]:
         assert layer in out
     assert "hard-coded single-page" in out
+    assert "layout spacing" in out
+    assert "Widget sections must not touch" in out
+    assert "gap" in out
     assert "wren-core-wasm" in out
     assert "wren genbi register myapp --data-mode snapshot" in out
     assert "wren genbi verify myapp" in out

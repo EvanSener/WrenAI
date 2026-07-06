@@ -83,6 +83,17 @@ Layer responsibilities:
 Keep this framework generic. Business-specific dashboards, widgets, queries,
 datasets, labels, SQL, and metrics must come only from the user's request and
 the project's MDL inventory, never from a built-in template domain.
+
+Layout spacing rules:
+
+- Use a stable layout spacing system for the generated BI shell and widgets.
+- Widget sections must not touch: KPI cards, filters, charts, tables, and
+  detail panels need explicit vertical separation via a parent `gap` or
+  equivalent block spacing.
+- Do not rely on borders, card height, or incidental margins to create
+  separation between stacked sections.
+- Verify desktop and mobile layouts so dynamic titles, badges, legends, and
+  tables do not overlap or collapse into adjacent widgets.
 """
 
 

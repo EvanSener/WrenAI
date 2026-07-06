@@ -79,6 +79,10 @@ Follow the instruction exactly. Key conventions:
     fields, filters, and metric definitions.
   - Dataset: data contract consumed by widgets; it declares fields, formats,
     grain, and snapshot paths or live endpoint references.
+- Apply a stable layout spacing system. Widget sections must not touch: KPI
+  cards, filters, charts, tables, and detail panels need explicit vertical
+  separation via a parent `gap` or equivalent block spacing. Do not rely on
+  borders, card height, or incidental margins to separate stacked sections.
 - snapshot: export the data the dashboard needs into `apps/<name>/data/` as
   parquet (`verify` requires at least one `.parquet`/`.duckdb` asset). See
   **Snapshot data export** below for the recipe and where the data comes from.
