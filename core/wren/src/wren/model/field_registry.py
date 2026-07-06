@@ -150,6 +150,15 @@ _MODEL_UI_OVERRIDES: dict[str, dict[str, dict]] = {
             "label": "Limit Instance Tunnel",
             "input_type": "text",
         },
+        "query_timeout_seconds": {
+            "label": "Query Timeout Seconds",
+            "input_type": "text",
+        },
+        "max_rows": {"label": "Max Rows", "input_type": "text"},
+        "enforce_read_only": {
+            "label": "Enforce Read Only",
+            "input_type": "text",
+        },
     },
     "CannerConnectionInfo": {
         "pat": {"label": "Personal Access Token"},

@@ -206,6 +206,9 @@ def test_maxcompute_fields_and_labels():
         "quota_name",
         "use_instance_tunnel",
         "limit_instance_tunnel",
+        "query_timeout_seconds",
+        "max_rows",
+        "enforce_read_only",
     } <= set(fields)
     assert "hints" not in fields
     assert fields["access_id"].label == "Access Key ID"
@@ -215,6 +218,9 @@ def test_maxcompute_fields_and_labels():
     assert fields["schema_name"].label == "Schema"
     assert fields["use_instance_tunnel"].default == "true"
     assert fields["limit_instance_tunnel"].default == "false"
+    assert fields["query_timeout_seconds"].default == "180"
+    assert fields["max_rows"].default == "10000"
+    assert fields["enforce_read_only"].default == "true"
 
 
 def test_fields_match_mcp_web_ui_postgres():

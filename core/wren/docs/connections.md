@@ -137,6 +137,22 @@ Both formats are accepted. The CLI auto-flattens the envelope format.
   "endpoint": "https://service.cn-shanghai.maxcompute.aliyun.com/api",
   "schema": "analytics",
   "tunnel_endpoint": "https://dt.cn-shanghai.maxcompute.aliyun.com",
-  "quota_name": "default"
+  "quota_name": "default",
+  "query_timeout_seconds": 180,
+  "max_rows": 10000,
+  "enforce_read_only": true
 }
 ```
+
+Production guardrails:
+
+- `enforce_read_only` defaults to `true`. The connector only accepts a single
+  read-only `SELECT` / `UNION` statement before sending SQL to MaxCompute.
+- `query_timeout_seconds` defaults to `180`. Wren submits the SQL
+  asynchronously and stops the MaxCompute instance if the client-side wait
+  exceeds this timeout.
+- `max_rows` defaults to `10000`. Queries without an explicit CLI `--limit`
+  are wrapped with this row cap; explicit limits are capped to this value.
+  Set `max_rows` to `null` only for trusted batch-style use cases.
+- `wren dry-run` still submits a `LIMIT 0` MaxCompute instance so that
+  MaxCompute validates the final SQL. It is protected by the same timeout.

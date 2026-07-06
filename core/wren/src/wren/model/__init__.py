@@ -105,6 +105,9 @@ class MaxComputeConnectionInfo(BaseConnectionInfo):
     use_instance_tunnel: bool = Field(default=True)
     limit_instance_tunnel: bool = Field(default=False)
     hints: dict[str, str] | None = Field(default=None)
+    query_timeout_seconds: int = Field(default=180, gt=0)
+    max_rows: int | None = Field(default=10_000, gt=0)
+    enforce_read_only: bool = Field(default=True)
 
 
 class CannerConnectionInfo(BaseConnectionInfo):

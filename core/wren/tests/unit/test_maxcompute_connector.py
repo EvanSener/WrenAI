@@ -33,10 +33,20 @@ class _FakeInstance:
     def __init__(self, connection, df: pd.DataFrame):
         self.connection = connection
         self.df = df
+        self.stopped = False
+
+    def wait_for_success(self, timeout=None):
+        self.connection.wait_for_success_calls.append({"timeout": timeout})
+        if self.connection.next_wait_error is not None:
+            raise self.connection.next_wait_error
 
     def open_reader(self, **kwargs):
         self.connection.open_reader_calls.append(kwargs)
         return _FakeReader(self.df)
+
+    def stop(self):
+        self.stopped = True
+        self.connection.stop_calls.append(True)
 
 
 @pytest.fixture
@@ -60,12 +70,22 @@ def fake_odps(monkeypatch):
             self.access_key = access_key
             self.kwargs = kwargs
             self.execute_calls = []
+            self.wait_for_success_calls = []
             self.open_reader_calls = []
+            self.stop_calls = []
             self.closed = False
+            self.next_wait_error = None
             connections.append(self)
 
-        def execute_sql(self, sql, hints=None):
-            self.execute_calls.append({"sql": sql, "hints": hints})
+        def execute_sql(self, sql, hints=None, quota_name=None, async_=False):
+            self.execute_calls.append(
+                {
+                    "sql": sql,
+                    "hints": hints,
+                    "quota_name": quota_name,
+                    "async_": async_,
+                }
+            )
             if self.next_error is not None:
                 raise self.next_error
             return _FakeInstance(self, self.next_df)
@@ -93,6 +113,9 @@ def _info(**overrides) -> MaxComputeConnectionInfo:
         "use_instance_tunnel": True,
         "limit_instance_tunnel": False,
         "hints": {"odps.sql.reducer.instances": "4"},
+        "query_timeout_seconds": 180,
+        "max_rows": 10_000,
+        "enforce_read_only": True,
     }
     data.update(overrides)
     return MaxComputeConnectionInfo(**data)
@@ -109,11 +132,12 @@ def test_connector_builds_odps_client_and_options(fake_odps) -> None:
         "endpoint": "https://service.cn-shanghai.maxcompute.aliyun.com/api",
         "schema": "analytics",
         "tunnel_endpoint": "https://dt.cn-shanghai.maxcompute.aliyun.com",
+        "quota_name": "quota-a",
     }
-    assert fake_odps.options.enable_schema is True
-    assert fake_odps.options.quota_name == "quota-a"
-    assert fake_odps.options.tunnel.use_instance_tunnel is True
-    assert fake_odps.options.tunnel.limit_instance_tunnel is False
+    assert fake_odps.options.enable_schema is False
+    assert fake_odps.options.quota_name is None
+    assert fake_odps.options.tunnel.use_instance_tunnel is None
+    assert fake_odps.options.tunnel.limit_instance_tunnel is None
 
 
 def test_connector_import_error_points_to_maxcompute_extra(monkeypatch) -> None:
@@ -141,9 +165,19 @@ def test_query_executes_with_hints_and_returns_arrow(fake_odps) -> None:
     conn = fake_odps.connections[-1]
     assert conn.execute_calls[-1] == {
         "sql": "SELECT * FROM (SELECT id, name FROM orders) AS _wren_sub LIMIT 10",
-        "hints": {"odps.sql.reducer.instances": "4"},
+        "hints": {
+            "odps.sql.reducer.instances": "4",
+            "odps.sql.allow.namespace.schema": "true",
+            "odps.namespace.schema": "true",
+            "odps.default.schema": "analytics",
+        },
+        "quota_name": "quota-a",
+        "async_": True,
     }
+    assert conn.wait_for_success_calls[-1] == {"timeout": 180}
     assert conn.open_reader_calls[-1] == {"tunnel": True, "limit": False}
+    assert fake_odps.options.tunnel.use_instance_tunnel is None
+    assert fake_odps.options.tunnel.limit_instance_tunnel is None
     assert table.column("id").to_pylist() == [1, 2]
     assert table.column("name").to_pylist() == ["a", "b"]
 
@@ -154,7 +188,30 @@ def test_query_without_limit_strips_trailing_semicolon(fake_odps) -> None:
     connector.query("SELECT 1;")
 
     conn = fake_odps.connections[-1]
+    assert (
+        conn.execute_calls[-1]["sql"]
+        == "SELECT * FROM (SELECT 1) AS _wren_sub LIMIT 10000"
+    )
+
+
+def test_query_can_disable_default_max_rows(fake_odps) -> None:
+    connector = MaxComputeConnector(_info(max_rows=None))
+
+    connector.query("SELECT 1;")
+
+    conn = fake_odps.connections[-1]
     assert conn.execute_calls[-1]["sql"] == "SELECT 1"
+
+
+def test_query_caps_requested_limit_to_max_rows(fake_odps) -> None:
+    connector = MaxComputeConnector(_info(max_rows=5))
+
+    connector.query("SELECT 1", limit=100)
+
+    conn = fake_odps.connections[-1]
+    assert (
+        conn.execute_calls[-1]["sql"] == "SELECT * FROM (SELECT 1) AS _wren_sub LIMIT 5"
+    )
 
 
 def test_dry_run_wraps_with_limit_zero(fake_odps) -> None:
@@ -165,7 +222,14 @@ def test_dry_run_wraps_with_limit_zero(fake_odps) -> None:
     conn = fake_odps.connections[-1]
     assert conn.execute_calls[-1] == {
         "sql": "SELECT * FROM (SELECT 1) AS _wren_sub LIMIT 0",
-        "hints": {"odps.sql.reducer.instances": "4"},
+        "hints": {
+            "odps.sql.reducer.instances": "4",
+            "odps.sql.allow.namespace.schema": "true",
+            "odps.namespace.schema": "true",
+            "odps.default.schema": "analytics",
+        },
+        "quota_name": "quota-a",
+        "async_": True,
     }
 
 
@@ -189,6 +253,67 @@ def test_dry_run_wraps_driver_errors(fake_odps) -> None:
 
     assert exc.value.error_code == ErrorCode.INVALID_SQL
     assert exc.value.phase == ErrorPhase.SQL_DRY_RUN
+
+
+def test_query_blocks_non_select_by_default(fake_odps) -> None:
+    connector = MaxComputeConnector(_info())
+
+    with pytest.raises(WrenError) as exc:
+        connector.query("INSERT OVERWRITE TABLE t SELECT 1")
+
+    assert exc.value.error_code == ErrorCode.INVALID_SQL
+    assert exc.value.phase == ErrorPhase.SQL_POLICY_CHECK
+    assert fake_odps.connections[-1].execute_calls == []
+
+
+def test_query_blocks_multiple_statements_by_default(fake_odps) -> None:
+    connector = MaxComputeConnector(_info())
+
+    with pytest.raises(WrenError) as exc:
+        connector.query("SELECT 1; DROP TABLE t")
+
+    assert exc.value.error_code == ErrorCode.INVALID_SQL
+    assert exc.value.phase == ErrorPhase.SQL_POLICY_CHECK
+    assert fake_odps.connections[-1].execute_calls == []
+
+
+def test_query_can_disable_read_only_guard(fake_odps) -> None:
+    connector = MaxComputeConnector(_info(enforce_read_only=False, max_rows=None))
+
+    connector.query("INSERT OVERWRITE TABLE t SELECT 1")
+
+    conn = fake_odps.connections[-1]
+    assert conn.execute_calls[-1]["sql"] == "INSERT OVERWRITE TABLE t SELECT 1"
+
+
+def test_query_timeout_stops_instance(fake_odps) -> None:
+    connector = MaxComputeConnector(_info(query_timeout_seconds=3))
+    conn = fake_odps.connections[-1]
+    conn.next_wait_error = TimeoutError("timeout")
+
+    with pytest.raises(WrenError) as exc:
+        connector.query("SELECT 1")
+
+    assert exc.value.error_code == ErrorCode.DATABASE_TIMEOUT
+    assert exc.value.phase == ErrorPhase.SQL_EXECUTION
+    assert conn.wait_for_success_calls[-1] == {"timeout": 3}
+    assert conn.stop_calls == [True]
+
+
+def test_query_driver_timeout_class_stops_instance(fake_odps) -> None:
+    class RequestsConnectTimeout(Exception):
+        pass
+
+    connector = MaxComputeConnector(_info(query_timeout_seconds=3))
+    conn = fake_odps.connections[-1]
+    conn.next_wait_error = RequestsConnectTimeout("timeout")
+
+    with pytest.raises(WrenError) as exc:
+        connector.query("SELECT 1")
+
+    assert exc.value.error_code == ErrorCode.DATABASE_TIMEOUT
+    assert exc.value.phase == ErrorPhase.SQL_EXECUTION
+    assert conn.stop_calls == [True]
 
 
 def test_close_delegates_when_available(fake_odps) -> None:
