@@ -63,14 +63,32 @@ Follow the instruction exactly. Key conventions:
 - Copy the compiled MDL into the app as `apps/<name>/mdl.json`.
 - Load `wren-core-wasm` from the CDN given in the instruction; never bundle
   the ~68MB binary.
+- Build an abstract BI app structure first; do not collapse the request into a
+  single hard-coded HTML dashboard. The required hierarchy is
+  `Workspace -> Dashboard -> Widget -> Query -> Dataset`.
+- Include at least these paths under `apps/<name>/`: `workspace.json`,
+  `dashboards/`, `widgets/`, `queries/`, `datasets/`, `data/`, and `assets/`.
+- Use the hierarchy consistently:
+  - Workspace: app-level metadata, navigation, dashboard registry, and default
+    dashboard.
+  - Dashboard: business-facing page composition; it references widgets and does
+    not directly own SQL or physical data paths.
+  - Widget: visualization/interaction config; it binds to a dataset and
+    declares presentation, filters, fields, sorting, and chart/table behavior.
+  - Query: semantic SQL or query intent; it records source logic, selected
+    fields, filters, and metric definitions.
+  - Dataset: data contract consumed by widgets; it declares fields, formats,
+    grain, and snapshot paths or live endpoint references.
 - snapshot: export the data the dashboard needs into `apps/<name>/data/` as
   parquet (`verify` requires at least one `.parquet`/`.duckdb` asset). See
   **Snapshot data export** below for the recipe and where the data comes from.
 - live: write an endpoint-only connection config. NEVER inline credentials —
   `verify` scans for them (best-effort) and `deploy` gates on `verify`, but
   the rule is on you: a public static host exposes every shipped file.
-- Design the dashboard to actually answer the user's request: pick the right
-  charts/tables for the question, not a generic template.
+- Design dashboards and widgets to actually answer the user's request: pick the
+  right charts/tables for the question, not a generic template. Business terms,
+  SQL, labels, metrics, and datasets must come from the user prompt and the MDL
+  inventory, not from built-in example domains.
 
 #### Snapshot data export
 

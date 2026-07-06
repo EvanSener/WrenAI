@@ -42,6 +42,49 @@ _SNAPSHOT_GUIDANCE = """\
    queries them client-side via wren-core-wasm. No backend is involved.
 """
 
+_BI_INFORMATION_ARCHITECTURE = """\
+## BI information architecture
+
+Generate the app as an abstract BI app, not as a hard-coded single-page
+dashboard. The required information architecture is:
+
+```text
+Workspace -> Dashboard -> Widget -> Query -> Dataset
+```
+
+Create at least this structure under the target folder:
+
+```text
+apps/{app_name}/
+├── index.html
+├── mdl.json
+├── workspace.json
+├── dashboards/
+├── widgets/
+├── queries/
+├── datasets/
+├── data/
+└── assets/
+```
+
+Layer responsibilities:
+
+- **Workspace** — the app-level entry point. It manages one or more dashboards,
+  global metadata, navigation, and the default dashboard.
+- **Dashboard** — a business-facing page definition. It composes widgets and
+  must not directly own SQL text or physical data file paths.
+- **Widget** — a visualization or interaction component. It binds to a dataset
+  and declares presentation, fields, filters, sorting, and chart/table behavior.
+- **Query** — the semantic SQL or query intent that produces a dataset. It
+  records source logic, selected fields, filters, and metric definitions.
+- **Dataset** — the data contract consumed by widgets. It declares fields,
+  formats, grain, and either bundled snapshot paths or live endpoint references.
+
+Keep this framework generic. Business-specific dashboards, widgets, queries,
+datasets, labels, SQL, and metrics must come only from the user's request and
+the project's MDL inventory, never from a built-in template domain.
+"""
+
 
 def _data_mode_guidance(data_mode: str) -> str:
     if data_mode == "snapshot":
@@ -105,6 +148,8 @@ the app folder:
 ### Available models
 
 {_format_model_inventory(models)}
+
+{_BI_INFORMATION_ARCHITECTURE.format(app_name=app_name)}
 
 ## Data handling ({data_mode})
 

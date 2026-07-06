@@ -113,6 +113,42 @@ def test_build_includes_wasm_wiring_and_final_steps(tmp_path: Path) -> None:
     assert "wren genbi verify myapp" in result.output
 
 
+def test_build_includes_abstract_bi_app_information_architecture(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+
+    result = runner.invoke(
+        app, ["genbi", "build", "myapp", "--prompt", "x", "-p", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Workspace -> Dashboard -> Widget -> Query -> Dataset" in out
+    for required_path in [
+        "workspace.json",
+        "dashboards/",
+        "widgets/",
+        "queries/",
+        "datasets/",
+        "data/",
+        "assets/",
+    ]:
+        assert required_path in out
+    for layer in [
+        "Workspace",
+        "Dashboard",
+        "Widget",
+        "Query",
+        "Dataset",
+    ]:
+        assert layer in out
+    assert "hard-coded single-page" in out
+    assert "wren-core-wasm" in out
+    assert "wren genbi register myapp --data-mode snapshot" in out
+    assert "wren genbi verify myapp" in out
+
+
 def test_build_snapshot_mode_gives_data_bundling_guidance(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
 
