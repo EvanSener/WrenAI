@@ -191,6 +191,13 @@ def add_table(
         bool,
         typer.Option("--dry-run", help="Print generated model YAML without writing."),
     ] = False,
+    replace_descriptions: Annotated[
+        bool,
+        typer.Option(
+            "--replace-descriptions",
+            help="When overwriting an existing model, replace curated descriptions with source table comments.",
+        ),
+    ] = False,
     build_after: Annotated[
         bool,
         typer.Option(
@@ -224,6 +231,7 @@ def add_table(
     from wren.table_scaffold import (  # noqa: PLC0415
         default_model_name,
         introspect_maxcompute_table,
+        merge_existing_semantics,
         model_metadata_from_table,
         validate_model_name,
         write_model_metadata,
@@ -290,6 +298,16 @@ def add_table(
             table_schema=table_schema,
             table_catalog=table_catalog,
         )
+        existing_metadata_path = (
+            project_path / "models" / model_name / "metadata.yml"
+        )
+        if force and existing_metadata_path.exists() and not replace_descriptions:
+            import yaml as _yaml  # noqa: PLC0415
+
+            existing_metadata = _yaml.safe_load(
+                existing_metadata_path.read_text(encoding="utf-8")
+            )
+            metadata = merge_existing_semantics(metadata, existing_metadata)
         if dry_run:
             import yaml as _yaml  # noqa: PLC0415
 

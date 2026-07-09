@@ -120,6 +120,7 @@ metadata from the project's bound profile and writing
 wren context add-table dws_order_daily_df --model order_daily
 wren context add-table dws_order_daily_df --model order_daily --dry-run
 wren context add-table dws_order_daily_df --model order_daily --force
+wren context add-table dws_order_daily_df --model order_daily --force --replace-descriptions
 ```
 
 The command builds `target/mdl.json` after writing by default. Use `--no-build`
@@ -127,6 +128,11 @@ to only write the model YAML. `--dry-run` prints the generated YAML without
 writing. MaxCompute partition columns are kept as queryable columns and also
 marked with machine-readable metadata: model `properties.partition_columns`
 and column `properties.is_partition`.
+
+When `--force` refreshes an existing model, existing model and column
+descriptions are preserved by default while structure and partition metadata
+are refreshed. Use `--replace-descriptions` to replace curated descriptions
+with source table comments.
 
 ---
 

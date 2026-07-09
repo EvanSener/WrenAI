@@ -119,6 +119,54 @@ def model_metadata_from_table(
     }
 
 
+def merge_existing_semantics(
+    metadata: dict[str, Any],
+    existing: dict[str, Any],
+    *,
+    preserve_descriptions: bool = True,
+) -> dict[str, Any]:
+    """Merge curated semantic properties from an existing model.
+
+    Refreshing a live table should update structural metadata while preserving
+    business wording analysts already curated. Generated partition metadata wins
+    because it is derived from the live warehouse schema.
+    """
+    if not isinstance(existing, dict):
+        return metadata
+
+    merged = dict(metadata)
+    existing_props = existing.get("properties") or {}
+    new_props = metadata.get("properties") or {}
+    if isinstance(existing_props, dict):
+        model_props = {**existing_props, **new_props}
+        if preserve_descriptions and existing_props.get("description"):
+            model_props["description"] = existing_props["description"]
+        merged["properties"] = model_props
+
+    existing_cols = {
+        col.get("name"): col
+        for col in existing.get("columns", [])
+        if isinstance(col, dict) and col.get("name")
+    }
+    merged_cols: list[dict[str, Any]] = []
+    for col in metadata.get("columns", []):
+        if not isinstance(col, dict):
+            merged_cols.append(col)
+            continue
+        existing_col = existing_cols.get(col.get("name")) or {}
+        existing_col_props = existing_col.get("properties") or {}
+        new_col_props = col.get("properties") or {}
+        if isinstance(existing_col_props, dict):
+            col = dict(col)
+            col_props = {**existing_col_props, **new_col_props}
+            if preserve_descriptions and existing_col_props.get("description"):
+                col_props["description"] = existing_col_props["description"]
+            col["properties"] = col_props
+        merged_cols.append(col)
+    merged["columns"] = merged_cols
+    return merged
+
+
 def write_model_metadata(
     project_path: Path,
     metadata: dict[str, Any],

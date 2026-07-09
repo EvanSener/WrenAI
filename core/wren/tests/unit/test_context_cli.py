@@ -641,6 +641,53 @@ def test_add_table_refuses_existing_model_without_force(tmp_path, monkeypatch):
     assert "--force" in result.output
 
 
+def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    model_dir = tmp_path / "models" / "tenant_order_daily"
+    model_dir.mkdir(parents=True)
+    (model_dir / "metadata.yml").write_text(
+        "name: tenant_order_daily\n"
+        "properties:\n"
+        "  description: 人工维护的订单日表口径。\n"
+        "table_reference:\n"
+        "  table: dws_tenant_order_df\n"
+        "columns:\n"
+        "- name: tenant_id\n"
+        "  type: STRING\n"
+        "  properties:\n"
+        "    description: 人工维护的租户 ID。\n"
+        "- name: ds\n"
+        "  type: STRING\n"
+        "  properties:\n"
+        "    description: 人工维护的分区日期。\n"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "add-table",
+            "dws_tenant_order_df",
+            "--path",
+            str(tmp_path),
+            "--model",
+            "tenant_order_daily",
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
+    assert metadata["properties"]["description"] == "人工维护的订单日表口径。"
+    assert metadata["properties"]["partition_columns"] == ["ds"]
+    by_name = {col["name"]: col for col in metadata["columns"]}
+    assert by_name["tenant_id"]["properties"]["description"] == "人工维护的租户 ID。"
+    assert by_name["ds"]["properties"]["description"] == "人工维护的分区日期。"
+    assert by_name["ds"]["properties"]["is_partition"] is True
+    assert by_name["ds"]["properties"]["partition_default"] == "max_pt"
+
+
 def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
     _install_fake_odps(monkeypatch)
     _make_maxcompute_project(tmp_path, monkeypatch)
