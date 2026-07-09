@@ -114,13 +114,13 @@ To migrate `instructions.md` and the LanceDB memory into `knowledge/`, see
 
 Add a live MaxCompute table to the current Wren project by reading table
 metadata from the project's bound profile and writing
-`models/<model>/metadata.yml`.
+`models/<table>/metadata.yml`.
 
 ```bash
-wren context add-table dws_order_daily_df --model order_daily
-wren context add-table dws_order_daily_df --model order_daily --dry-run
-wren context add-table dws_order_daily_df --model order_daily --force
-wren context add-table dws_order_daily_df --model order_daily --force --replace-descriptions
+wren context add-table dws_order_daily_df
+wren context add-table dws_order_daily_df --dry-run
+wren context add-table dws_order_daily_df --force
+wren context add-table dws_order_daily_df --force --replace-descriptions
 ```
 
 The command builds `target/mdl.json` after writing by default. Use `--no-build`
@@ -129,6 +129,9 @@ writing. MaxCompute partition columns are kept as queryable columns. Their
 partition semantics are recorded once under model
 `properties.partition_columns`, with each entry carrying `name`, `type`, and
 `properties.description`.
+
+MaxCompute model names are derived from `table_reference.table`, so generated
+`name` stays aligned with the physical table reference.
 
 When `--force` refreshes an existing model, existing model and column
 descriptions are preserved by default while structure and partition metadata

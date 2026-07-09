@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 import wren.profile as profile_mod
 from wren.cli import app
+from wren.table_scaffold import default_model_name
 
 runner = CliRunner()
 
@@ -511,6 +512,10 @@ def test_build_no_validate(tmp_path):
 # ── wren context add-table ─────────────────────────────────────────────────
 
 
+def test_default_model_name_preserves_table_reference_name_case():
+    assert default_model_name("ads.Dws_Tenant_Order_DF") == "Dws_Tenant_Order_DF"
+
+
 def _install_fake_odps(monkeypatch):
     calls = []
 
@@ -598,14 +603,14 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    assert "tenant_order_daily" in result.output
+    assert "dws_tenant_order_df" in result.output
     assert (tmp_path / "target" / "mdl.json").exists()
     assert calls[-1]["table_name"] == "dws_tenant_order_df"
 
     metadata = yaml.safe_load(
-        (tmp_path / "models" / "tenant_order_daily" / "metadata.yml").read_text()
+        (tmp_path / "models" / "dws_tenant_order_df" / "metadata.yml").read_text()
     )
-    assert metadata["name"] == "tenant_order_daily"
+    assert metadata["name"] == "dws_tenant_order_df"
     assert metadata["table_reference"] == {"table": "dws_tenant_order_df"}
     assert [col["name"] for col in metadata["columns"]] == [
         "tenant_id",
@@ -647,10 +652,10 @@ def test_add_table_refuses_existing_model_without_force(tmp_path, monkeypatch):
 def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     _install_fake_odps(monkeypatch)
     _make_maxcompute_project(tmp_path, monkeypatch)
-    model_dir = tmp_path / "models" / "tenant_order_daily"
+    model_dir = tmp_path / "models" / "dws_tenant_order_df"
     model_dir.mkdir(parents=True)
     (model_dir / "metadata.yml").write_text(
-        "name: tenant_order_daily\n"
+        "name: dws_tenant_order_df\n"
         "properties:\n"
         "  description: 人工维护的订单日表口径。\n"
         "  unique_identifier: tenant_id, ds\n"
@@ -721,10 +726,10 @@ def test_add_table_force_preserves_existing_unique_identifier_columns(
 ):
     _install_fake_odps(monkeypatch)
     _make_maxcompute_project(tmp_path, monkeypatch)
-    model_dir = tmp_path / "models" / "tenant_order_daily"
+    model_dir = tmp_path / "models" / "dws_tenant_order_df"
     model_dir.mkdir(parents=True)
     (model_dir / "metadata.yml").write_text(
-        "name: tenant_order_daily\n"
+        "name: dws_tenant_order_df\n"
         "properties:\n"
         "  unique_identifier_columns:\n"
         "  - name: tenant_id\n"

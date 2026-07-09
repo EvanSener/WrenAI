@@ -158,7 +158,10 @@ def add_table(
         typer.Option(
             "--model",
             "-m",
-            help="Wren semantic model name. Defaults to a sanitized table name.",
+            help=(
+                "Deprecated compatibility option. MaxCompute model names are "
+                "derived from table_reference.table."
+            ),
         ),
     ] = None,
     table_schema: Annotated[
@@ -209,7 +212,7 @@ def add_table(
     """Add a physical MaxCompute table as a Wren model.
 
     The command uses the project's bound profile, reads the live MaxCompute
-    table schema, writes ``models/<model>/metadata.yml``, and builds the
+    table schema, writes ``models/<table>/metadata.yml``, and builds the
     project by default. It is deliberately source-backed; no manual column
     copying is required.
     """
@@ -251,7 +254,7 @@ def add_table(
         )
         raise typer.Exit(1)
 
-    model_name = model or default_model_name(table)
+    model_name = default_model_name(table)
     try:
         validate_model_name(model_name)
     except ValueError as exc:

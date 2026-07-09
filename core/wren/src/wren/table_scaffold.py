@@ -30,9 +30,9 @@ class IntrospectedTable:
 
 
 def default_model_name(physical_table: str) -> str:
-    """Derive a stable Wren model name from a physical table name."""
+    """Derive the Wren model name from table_reference.table."""
     raw = physical_table.rsplit(".", 1)[-1].strip()
-    name = _SAFE_NAME_RE.sub("_", raw).strip("_").lower()
+    name = _SAFE_NAME_RE.sub("_", raw).strip("_")
     if not name:
         name = "model"
     if name[0].isdigit():
