@@ -96,7 +96,7 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     )
     if unique_identifier_meaning:
         lines.append(f"  Unique identifier meaning: {unique_identifier_meaning}")
-    partition_columns = _format_values(
+    partition_columns = _format_partition_columns(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
     if partition_columns:
@@ -317,7 +317,7 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
     )
     if unique_identifier_meaning:
         parts.append(f". Unique identifier meaning: {unique_identifier_meaning}")
-    partition_columns = _format_values(
+    partition_columns = _format_partition_columns(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
     if partition_columns:
@@ -597,6 +597,34 @@ def _format_partition_filter(value) -> str:
         function = value.get("function")
         if column and function:
             return f"{column} = {function}(table)"
+    return str(value).strip()
+
+
+def _format_partition_columns(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return ", ".join(part.strip() for part in value.split(",") if part.strip())
+    if isinstance(value, Sequence) and not isinstance(value, bytes):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                dtype = str(item.get("type") or "").strip()
+                desc = _prop_description(item)
+                part = name
+                if dtype:
+                    part = f"{part} ({dtype})"
+                if desc:
+                    part = f"{part} — {desc}"
+                parts.append(part)
+            else:
+                part = str(item).strip()
+                if part:
+                    parts.append(part)
+        return ", ".join(parts)
     return str(value).strip()
 
 

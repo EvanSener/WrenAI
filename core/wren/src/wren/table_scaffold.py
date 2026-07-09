@@ -58,12 +58,13 @@ def model_metadata_from_table(
 ) -> dict[str, Any]:
     """Build a ``models/<name>/metadata.yml`` payload."""
     validate_model_name(model_name)
-    partition_columns = [col.name for col in table.columns if col.is_partition]
+    partition_columns = [col for col in table.columns if col.is_partition]
+    partition_column_names = [col.name for col in partition_columns]
     latest_partition_column = next(
         (
-            name
-            for name in partition_columns
-            if name.lower() == _LATEST_PARTITION_COLUMN
+            col.name
+            for col in partition_columns
+            if col.name.lower() == _LATEST_PARTITION_COLUMN
         ),
         None,
     )
@@ -72,9 +73,9 @@ def model_metadata_from_table(
         model_description = (
             f"MaxCompute 表 {table.physical_table} 的语义模型。请补充业务口径。"
         )
-    if partition_columns and "分区" not in model_description:
+    if partition_column_names and "分区" not in model_description:
         model_description = (
-            f"{model_description} 按 {', '.join(partition_columns)} 分区。"
+            f"{model_description} 按 {', '.join(partition_column_names)} 分区。"
         )
 
     table_reference: dict[str, str] = {"table": table.physical_table}
@@ -87,13 +88,6 @@ def model_metadata_from_table(
     for col in table.columns:
         col_desc = col.comment or f"MaxCompute 字段 {col.name}。请补充业务含义。"
         col_properties: dict[str, Any] = {"description": col_desc}
-        if col.is_partition:
-            suffix = "分区字段；未指定时默认查询最新分区。"
-            col_desc = f"{col_desc.rstrip('。')}；{suffix}"
-            col_properties["description"] = col_desc
-            col_properties["is_partition"] = True
-            if col.name == latest_partition_column:
-                col_properties["partition_default"] = "max_pt"
         columns.append(
             {
                 "name": col.name,
@@ -108,12 +102,10 @@ def model_metadata_from_table(
         "unique_identifier_meaning": "",
     }
     if partition_columns:
-        model_properties["partition_columns"] = partition_columns
-    if latest_partition_column:
-        model_properties["default_partition_filter"] = {
-            "column": latest_partition_column,
-            "expression": f"{latest_partition_column} = max_pt('{table.physical_table}')",
-        }
+        model_properties["partition_columns"] = [
+            _partition_column_metadata(col, latest_partition_column)
+            for col in partition_columns
+        ]
 
     return {
         "name": model_name,
@@ -145,6 +137,7 @@ def merge_existing_semantics(
         model_props = _merge_properties(existing_props, new_props)
         if preserve_descriptions and existing_props.get("description"):
             model_props["description"] = existing_props["description"]
+        _drop_deprecated_model_partition_properties(model_props)
         merged["properties"] = model_props
 
     existing_cols = {
@@ -165,10 +158,40 @@ def merge_existing_semantics(
             col_props = _merge_properties(existing_col_props, new_col_props)
             if preserve_descriptions and existing_col_props.get("description"):
                 col_props["description"] = existing_col_props["description"]
+            _drop_deprecated_column_partition_properties(col_props)
             col["properties"] = col_props
         merged_cols.append(col)
     merged["columns"] = merged_cols
     return merged
+
+
+def _partition_column_metadata(
+    col: IntrospectedColumn,
+    latest_partition_column: str | None,
+) -> dict[str, Any]:
+    description = col.comment or f"MaxCompute 分区字段 {col.name}。请补充业务含义。"
+    if col.name == latest_partition_column and "默认查询最新分区" not in description:
+        description = f"{description.rstrip('。')}；未指定时默认查询最新分区。"
+    return {
+        "name": col.name,
+        "type": col.type,
+        "properties": {"description": description},
+    }
+
+
+def _drop_deprecated_model_partition_properties(properties: dict[str, Any]) -> None:
+    for key in ("default_partition_filter", "defaultPartitionFilter"):
+        properties.pop(key, None)
+
+
+def _drop_deprecated_column_partition_properties(properties: dict[str, Any]) -> None:
+    for key in (
+        "is_partition",
+        "isPartition",
+        "partition_default",
+        "partitionDefault",
+    ):
+        properties.pop(key, None)
 
 
 def _merge_properties(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:

@@ -411,11 +411,15 @@ class TestDescribeSchema:
                     "name": "tenant_daily",
                     "properties": {
                         "description": "租户每日快照",
-                        "partitionColumns": ["ds"],
-                        "defaultPartitionFilter": {
-                            "column": "ds",
-                            "expression": "ds = max_pt('dws_tenant_df')",
-                        },
+                        "partitionColumns": [
+                            {
+                                "name": "ds",
+                                "type": "STRING",
+                                "properties": {
+                                    "description": "日期分区；未指定时默认查询最新分区。"
+                                },
+                            }
+                        ],
                     },
                     "columns": [
                         {
@@ -425,21 +429,21 @@ class TestDescribeSchema:
                         {
                             "name": "ds",
                             "type": "STRING",
-                            "properties": {
-                                "description": "日期分区",
-                                "isPartition": True,
-                                "partitionDefault": "max_pt",
-                            },
+                            "properties": {"description": "日期分区"},
                         },
                     ],
                 }
             ]
         }
         text = describe_schema(manifest)
-        assert "Partition columns: ds" in text
-        assert "Default partition filter: ds = max_pt('dws_tenant_df')" in text
-        assert "ds (STRING) — 日期分区 [partition column]" in text
-        assert "[partition default: max_pt]" in text
+        assert (
+            "Partition columns: ds (STRING) — 日期分区；未指定时默认查询最新分区。"
+            in text
+        )
+        assert "Default partition filter" not in text
+        assert "ds (STRING) — 日期分区" in text
+        assert "[partition column]" not in text
+        assert "[partition default: max_pt]" not in text
 
     def test_contains_list_accepted_values(self):
         manifest = {
