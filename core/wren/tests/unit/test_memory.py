@@ -387,7 +387,10 @@ class TestDescribeSchema:
                 {
                     "name": "tenant_daily",
                     "properties": {
-                        "uniqueIdentifier": "tenant_id, ds",
+                        "uniqueIdentifierColumns": [
+                            {"name": "tenant_id"},
+                            {"name": "ds"},
+                        ],
                         "uniqueIdentifierMeaning": "一个租户在一个业务日期的一条快照。",
                     },
                     "columns": [
@@ -398,7 +401,7 @@ class TestDescribeSchema:
             ]
         }
         text = describe_schema(manifest)
-        assert "Unique identifier: tenant_id, ds" in text
+        assert "Unique identifier columns: tenant_id, ds" in text
         assert "Unique identifier meaning: 一个租户在一个业务日期的一条快照。" in text
 
     def test_contains_partition_metadata(self):

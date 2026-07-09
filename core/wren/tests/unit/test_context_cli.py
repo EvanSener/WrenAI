@@ -614,7 +614,7 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     ]
     assert metadata["columns"][0]["type"] == "STRING"
     assert metadata["columns"][1]["type"] == "DECIMAL(18,2)"
-    assert metadata["properties"]["unique_identifier"] == ""
+    assert metadata["properties"]["unique_identifier_columns"] == [{"name": ""}]
     assert metadata["properties"]["unique_identifier_meaning"] == ""
     assert metadata["properties"]["partition_columns"] == ["ds"]
     assert metadata["properties"]["default_partition_filter"] == {
@@ -684,7 +684,11 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
     assert metadata["properties"]["description"] == "人工维护的订单日表口径。"
-    assert metadata["properties"]["unique_identifier"] == "tenant_id, ds"
+    assert metadata["properties"]["unique_identifier_columns"] == [
+        {"name": "tenant_id"},
+        {"name": "ds"},
+    ]
+    assert "unique_identifier" not in metadata["properties"]
     assert (
         metadata["properties"]["unique_identifier_meaning"]
         == "一个租户在一个业务日期的一条快照。"
@@ -695,6 +699,48 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert by_name["ds"]["properties"]["description"] == "人工维护的分区日期。"
     assert by_name["ds"]["properties"]["is_partition"] is True
     assert by_name["ds"]["properties"]["partition_default"] == "max_pt"
+
+
+def test_add_table_force_preserves_existing_unique_identifier_columns(
+    tmp_path, monkeypatch
+):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    model_dir = tmp_path / "models" / "tenant_order_daily"
+    model_dir.mkdir(parents=True)
+    (model_dir / "metadata.yml").write_text(
+        "name: tenant_order_daily\n"
+        "properties:\n"
+        "  unique_identifier_columns:\n"
+        "  - name: tenant_id\n"
+        "  - name: ds\n"
+        "table_reference:\n"
+        "  table: dws_tenant_order_df\n"
+        "columns:\n"
+        "- name: tenant_id\n"
+        "  type: STRING\n"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "add-table",
+            "dws_tenant_order_df",
+            "--path",
+            str(tmp_path),
+            "--model",
+            "tenant_order_daily",
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
+    assert metadata["properties"]["unique_identifier_columns"] == [
+        {"name": "tenant_id"},
+        {"name": "ds"},
+    ]
 
 
 def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
@@ -717,6 +763,7 @@ def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
     metadata = yaml.safe_load(result.output)
     assert metadata["name"] == "dwd_orders"
     assert metadata["table_reference"]["table"] == "dwd_orders"
+    assert metadata["properties"]["unique_identifier_columns"] == [{"name": ""}]
     assert metadata["properties"]["partition_columns"] == ["ds"]
     assert not (tmp_path / "models" / "dwd_orders" / "metadata.yml").exists()
 

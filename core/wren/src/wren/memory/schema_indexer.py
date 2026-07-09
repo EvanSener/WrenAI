@@ -86,9 +86,9 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         lines.append(f"  Data scope: {data_scope}")
-    unique_identifier = _prop_value(model, "uniqueIdentifier", "unique_identifier")
-    if unique_identifier:
-        lines.append(f"  Unique identifier: {unique_identifier}")
+    unique_identifier_columns = _format_unique_identifier_columns(model)
+    if unique_identifier_columns:
+        lines.append(f"  Unique identifier columns: {unique_identifier_columns}")
     unique_identifier_meaning = _prop_value(
         model,
         "uniqueIdentifierMeaning",
@@ -307,9 +307,9 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         parts.append(f". Data scope: {data_scope}")
-    unique_identifier = _prop_value(model, "uniqueIdentifier", "unique_identifier")
-    if unique_identifier:
-        parts.append(f". Unique identifier: {unique_identifier}")
+    unique_identifier_columns = _format_unique_identifier_columns(model)
+    if unique_identifier_columns:
+        parts.append(f". Unique identifier columns: {unique_identifier_columns}")
     unique_identifier_meaning = _prop_value(
         model,
         "uniqueIdentifierMeaning",
@@ -598,6 +598,27 @@ def _format_partition_filter(value) -> str:
         if column and function:
             return f"{column} = {function}(table)"
     return str(value).strip()
+
+
+def _format_unique_identifier_columns(model: dict) -> str:
+    value = _prop_raw(
+        model,
+        "uniqueIdentifierColumns",
+        "unique_identifier_columns",
+    )
+    names: list[str] = []
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                name = str(item).strip()
+            if name:
+                names.append(name)
+    legacy = _prop_value(model, "uniqueIdentifier", "unique_identifier")
+    if legacy and not names:
+        names = [part.strip() for part in legacy.split(",") if part.strip()]
+    return ", ".join(names)
 
 
 def _is_truthy(value) -> bool:

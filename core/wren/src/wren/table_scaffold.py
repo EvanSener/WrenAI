@@ -104,7 +104,7 @@ def model_metadata_from_table(
 
     model_properties: dict[str, Any] = {
         "description": model_description,
-        "unique_identifier": "",
+        "unique_identifier_columns": [{"name": ""}],
         "unique_identifier_meaning": "",
     }
     if partition_columns:
@@ -173,11 +173,48 @@ def merge_existing_semantics(
 
 def _merge_properties(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
     merged = dict(existing)
+    if (
+        "unique_identifier" in merged
+        and "unique_identifier_columns" not in merged
+    ):
+        migrated = _unique_identifier_columns_from_legacy(merged.pop("unique_identifier"))
+        if migrated:
+            merged["unique_identifier_columns"] = migrated
     for key, value in generated.items():
         if value in (None, "") and existing.get(key) not in (None, ""):
             continue
+        if (
+            key == "unique_identifier_columns"
+            and _unique_identifier_columns_has_value(merged.get(key))
+        ):
+            continue
         merged[key] = value
     return merged
+
+
+def _unique_identifier_columns_has_value(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if isinstance(item, dict) and str(item.get("name") or "").strip():
+            return True
+    return False
+
+
+def _unique_identifier_columns_from_legacy(value: Any) -> list[dict[str, str]]:
+    if isinstance(value, str):
+        return [
+            {"name": part.strip()}
+            for part in value.split(",")
+            if part.strip()
+        ]
+    if isinstance(value, list):
+        return [
+            {"name": str(part).strip()}
+            for part in value
+            if str(part).strip()
+        ]
+    return []
 
 
 def write_model_metadata(
