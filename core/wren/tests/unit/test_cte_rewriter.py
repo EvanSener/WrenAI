@@ -113,6 +113,20 @@ def _make_rewriter(
     return CTERewriter(manifest_str, session, data_source, fallback=fallback)
 
 
+def _make_maxcompute_rewriter(
+    manifest: dict,
+    *,
+    fallback: bool = False,
+) -> CTERewriter:
+    manifest_str = _b64(manifest)
+    session = get_session_context(
+        manifest_str, None, None, DataSource.datafusion.name
+    )
+    return CTERewriter(
+        manifest_str, session, DataSource.maxcompute, fallback=fallback
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helper: parse and check CTE presence
 # ---------------------------------------------------------------------------
@@ -475,6 +489,86 @@ class TestDialectMapping:
 
     def test_maxcompute_maps_to_hive(self):
         assert get_sqlglot_dialect(DataSource.maxcompute) == "hive"
+
+
+# ---------------------------------------------------------------------------
+# Tests: MaxCompute model CTE aliasing
+# ---------------------------------------------------------------------------
+
+_MAXCOMPUTE_SAME_NAME_MANIFEST = {
+    "catalog": "wren",
+    "schema": "public",
+    "models": [
+        {
+            "name": "dws_pub_tenant_df_v",
+            "tableReference": {"table": "dws_pub_tenant_df_v"},
+            "columns": [
+                {"name": "ten_tenant_id", "type": "varchar"},
+                {"name": "ten_tenant_name_cn", "type": "varchar"},
+                {"name": "ds", "type": "varchar"},
+            ],
+        }
+    ],
+}
+
+_MAXCOMPUTE_VIEW_MANIFEST = {
+    **_MAXCOMPUTE_SAME_NAME_MANIFEST,
+    "views": [
+        {
+            "name": "tenant_view",
+            "statement": (
+                "SELECT dws_pub_tenant_df_v.ten_tenant_id "
+                "FROM dws_pub_tenant_df_v"
+            ),
+        }
+    ],
+}
+
+
+class TestMaxComputeModelCTEAliasing:
+    def test_same_model_and_physical_table_name_uses_distinct_cte(self):
+        rw = _make_maxcompute_rewriter(_MAXCOMPUTE_SAME_NAME_MANIFEST)
+
+        out = rw.rewrite(
+            "SELECT ten_tenant_id FROM dws_pub_tenant_df_v "
+            "WHERE dws_pub_tenant_df_v.ds = max_pt('dws_pub_tenant_df_v')"
+        )
+
+        assert _has_cte(out, "wren_model_dws_pub_tenant_df_v", dialect="hive")
+        assert not _has_cte(out, "dws_pub_tenant_df_v", dialect="hive")
+        assert "FROM `wren_model_dws_pub_tenant_df_v`" in out
+        assert (
+            "`wren_model_dws_pub_tenant_df_v`.ds = MAX_PT('dws_pub_tenant_df_v')"
+            in out
+        )
+        cte_body = _cte_body_sql(
+            out, "wren_model_dws_pub_tenant_df_v", dialect="hive"
+        )
+        assert cte_body is not None
+        assert "FROM dws_pub_tenant_df_v AS __source" in cte_body
+
+    def test_aliased_model_reference_keeps_user_alias(self):
+        rw = _make_maxcompute_rewriter(_MAXCOMPUTE_SAME_NAME_MANIFEST)
+
+        out = rw.rewrite(
+            "SELECT t.ten_tenant_id FROM dws_pub_tenant_df_v t "
+            "WHERE t.ds = max_pt('dws_pub_tenant_df_v')"
+        )
+
+        assert "FROM `wren_model_dws_pub_tenant_df_v` AS t" in out
+        assert "t.ten_tenant_id" in out
+        assert "t.ds = MAX_PT('dws_pub_tenant_df_v')" in out
+
+    def test_view_statement_model_refs_are_rewritten_to_distinct_cte(self):
+        rw = _make_maxcompute_rewriter(_MAXCOMPUTE_VIEW_MANIFEST)
+
+        out = rw.rewrite("SELECT ten_tenant_id FROM tenant_view")
+
+        assert _has_cte(out, "wren_model_dws_pub_tenant_df_v", dialect="hive")
+        assert _has_cte(out, "tenant_view", dialect="hive")
+        view_body = _cte_body_sql(out, "tenant_view", dialect="hive")
+        assert view_body is not None
+        assert "FROM `wren_model_dws_pub_tenant_df_v`" in view_body
 
 
 # ---------------------------------------------------------------------------

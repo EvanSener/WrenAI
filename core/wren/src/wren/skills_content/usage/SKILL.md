@@ -86,7 +86,8 @@ For project structure, MDL field definitions, and CLI workflow details, see the 
 |-----------|---------|
 | Default | `wren memory fetch -q "<question>"` |
 | Need specific model's columns | `wren memory fetch -q "..." --model <name> --threshold 0` |
-| Memory not installed | Read `target/mdl.json` in the project directory, or run `wren context show` |
+| Memory extra missing | Install the missing `wrenai[memory]` extra into the current `wren` Python environment, retry, and only fall back to `target/mdl.json` / `wren context show` if installation fails or the user forbids installs |
+| Memory unavailable after retry | Read `target/mdl.json` in the project directory, or run `wren context show` |
 
 If this is the first query in the conversation, also run:
 

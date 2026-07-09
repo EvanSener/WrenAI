@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 
 import sqlglot
 from sqlglot import exp, parse_one
@@ -63,6 +64,7 @@ def get_sqlglot_dialect(data_source: DataSource) -> str:
 _CASE_SENSITIVE_COLUMN_DIALECTS: frozenset[str] = frozenset(
     {"postgres", "oracle", "snowflake", "clickhouse"}
 )
+_MAXCOMPUTE_MODEL_CTE_PREFIX = "wren_model_"
 
 
 class CTERewriter:
@@ -315,8 +317,18 @@ class CTERewriter:
                 return sqlglot.transpile(wren_sql, read="wren", write=self.dialect)[0]
             raise ValueError(f"No model or view references found in SQL: {sql}")
 
-        model_ctes = self._build_model_ctes(used_columns, user_table_refs, col_quoting)
-        view_ctes = self._build_view_ctes(view_refs)
+        model_cte_refs = self._build_model_cte_refs(
+            used_columns, user_table_refs, user_cte_names, view_refs
+        )
+        if self._uses_distinct_model_cte_aliases:
+            self._rewrite_model_table_refs_to_cte_aliases(
+                ast, model_cte_refs, user_cte_names
+            )
+
+        model_ctes = self._build_model_ctes(
+            used_columns, model_cte_refs, col_quoting
+        )
+        view_ctes = self._build_view_ctes(view_refs, model_cte_refs)
         self._inject_ctes(ast, model_ctes + view_ctes)
         return ast.sql(dialect=self.dialect, identify=identify)
 
@@ -842,10 +854,130 @@ class CTERewriter:
     # CTE generation
     # ------------------------------------------------------------------
 
-    def _build_model_ctes(
+    @property
+    def _uses_distinct_model_cte_aliases(self) -> bool:
+        """Whether model CTE aliases must differ from model names.
+
+        MaxCompute treats ``WITH t AS (... FROM t ...)`` as a recursive CTE,
+        even when the inner ``t`` is intended to be the physical table. Wren
+        projects commonly keep ``model.name == tableReference.table`` for
+        discoverability, so the dialect fix is to give semantic model CTEs a
+        distinct alias and rewrite model references in the user SQL to that
+        alias.
+        """
+        return self.data_source == DataSource.maxcompute
+
+    @staticmethod
+    def _safe_model_cte_alias(model_name: str) -> str:
+        """Return a stable, valid CTE alias stem for *model_name*."""
+        safe = re.sub(r"[^0-9A-Za-z_]+", "_", model_name).strip("_")
+        if not safe:
+            safe = "model"
+        return f"{_MAXCOMPUTE_MODEL_CTE_PREFIX}{safe}"
+
+    def _build_model_cte_refs(
         self,
         used_columns: dict[str, list[str] | None],
         user_table_refs: dict[str, tuple[str, bool]],
+        user_cte_names: set[str],
+        view_refs: dict[str, tuple[str, bool]],
+    ) -> dict[str, tuple[str, bool]]:
+        """Return the CTE alias to emit for each used model."""
+        if not self._uses_distinct_model_cte_aliases:
+            return {
+                model_name: user_table_refs.get(model_name, (model_name, True))
+                for model_name in used_columns
+            }
+
+        taken = {name.lower() for name in user_cte_names}
+        taken.update(name.lower() for name, _quoted in view_refs.values())
+        refs: dict[str, tuple[str, bool]] = {}
+        for model_name in used_columns:
+            base = self._safe_model_cte_alias(model_name)
+            candidate = base
+            suffix = 2
+            while candidate.lower() in taken:
+                candidate = f"{base}_{suffix}"
+                suffix += 1
+            taken.add(candidate.lower())
+            refs[model_name] = (candidate, True)
+        return refs
+
+    def _rewrite_model_table_refs_to_cte_aliases(
+        self,
+        ast: exp.Expression,
+        model_cte_refs: dict[str, tuple[str, bool]],
+        user_cte_names: set[str],
+    ) -> None:
+        """Rewrite model table refs in *ast* to their generated CTE aliases."""
+        for select in ast.find_all(exp.Select):
+            qualifier_rewrites: dict[str, tuple[str, bool]] = {}
+            for table in self._select_scope_tables(select):
+                name = table.name
+                if not name or name.lower() in user_cte_names:
+                    continue
+                quoted = (
+                    bool(table.this.quoted)
+                    if isinstance(table.this, exp.Identifier)
+                    else False
+                )
+                model_name = resolve_model_name(name, quoted, self.model_dict)
+                if model_name is None or model_name not in model_cte_refs:
+                    continue
+
+                cte_name, cte_quoted = model_cte_refs[model_name]
+                if not table.alias:
+                    qualifier_rewrites[name.lower()] = (cte_name, cte_quoted)
+                table.set("this", exp.to_identifier(cte_name, quoted=cte_quoted))
+                table.set("db", None)
+                table.set("catalog", None)
+
+            if qualifier_rewrites:
+                self._rewrite_select_column_qualifiers(select, qualifier_rewrites)
+
+    @staticmethod
+    def _select_scope_tables(select: exp.Select) -> list[exp.Table]:
+        """Return direct FROM/JOIN table sources for one SELECT scope."""
+        tables: list[exp.Table] = []
+        from_ = select.args.get("from_") or select.args.get("from")
+        if from_:
+            from_sources = [from_.this, *from_.expressions]
+            tables.extend(source for source in from_sources if isinstance(source, exp.Table))
+        for join in select.args.get("joins") or []:
+            source = join.this
+            if isinstance(source, exp.Table):
+                tables.append(source)
+        return tables
+
+    @staticmethod
+    def _rewrite_select_column_qualifiers(
+        select: exp.Select,
+        qualifier_rewrites: dict[str, tuple[str, bool]],
+    ) -> None:
+        """Rewrite column qualifiers in one SELECT scope, skipping child scopes."""
+
+        def rewrite(node: exp.Expression) -> None:
+            if node is not select and isinstance(node, (exp.Select, exp.Subquery, exp.CTE)):
+                return
+            if isinstance(node, exp.Column) and node.table:
+                replacement = qualifier_rewrites.get(node.table.lower())
+                if replacement:
+                    cte_name, cte_quoted = replacement
+                    node.set("table", exp.to_identifier(cte_name, quoted=cte_quoted))
+            for child in node.args.values():
+                if isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, exp.Expression):
+                            rewrite(item)
+                elif isinstance(child, exp.Expression):
+                    rewrite(child)
+
+        rewrite(select)
+
+    def _build_model_ctes(
+        self,
+        used_columns: dict[str, list[str] | None],
+        model_cte_refs: dict[str, tuple[str, bool]],
         col_quoting: dict[str, dict[str, bool]],
     ) -> list[exp.CTE]:
         """Generate one CTE per model via wren-core transform_sql."""
@@ -893,15 +1025,7 @@ class CTERewriter:
                 expanded_ast, col_quoting.get(model_name, {})
             )
 
-            # Match the user's literal identifier (case + quoting) for the
-            # CTE alias so dialects with case-folding still bind the user's
-            # outer ``FROM <model>`` to the CTE. Oracle uppercases unquoted
-            # identifiers (so ``FROM orders`` resolves to ``ORDERS``); a
-            # quoted CTE ``"orders"`` would never match. Falling back to
-            # canonical model_name + quoted=True covers introspection-only
-            # callers that build their own used_columns dict without a
-            # user_table_refs entry.
-            cte_name, cte_quoted = user_table_refs.get(model_name, (model_name, True))
+            cte_name, cte_quoted = model_cte_refs.get(model_name, (model_name, True))
             cte = exp.CTE(
                 this=expanded_ast,
                 alias=exp.TableAlias(
@@ -976,7 +1100,11 @@ class CTERewriter:
                 seen = set(base[model])
                 base[model] = base[model] + [c for c in cols if c not in seen]
 
-    def _build_view_ctes(self, view_refs: dict[str, tuple[str, bool]]) -> list[exp.CTE]:
+    def _build_view_ctes(
+        self,
+        view_refs: dict[str, tuple[str, bool]],
+        model_cte_refs: dict[str, tuple[str, bool]],
+    ) -> list[exp.CTE]:
         """Generate one CTE per view, holding the native-SQL statement as-is.
 
         The statement is parsed/emitted with the target dialect (it is native
@@ -988,6 +1116,12 @@ class CTERewriter:
             body = parse_one(
                 self.view_dict[view_name]["statement"], dialect=self.dialect
             )
+            if self._uses_distinct_model_cte_aliases:
+                self._rewrite_model_table_refs_to_cte_aliases(
+                    body,
+                    model_cte_refs,
+                    self._collect_user_cte_names(body),
+                )
             cte = exp.CTE(
                 this=body,
                 alias=exp.TableAlias(
