@@ -381,6 +381,26 @@ class TestDescribeSchema:
         assert "[accepted values: placed, shipped, completed]" in text
         assert "[test status: verified]" in text
 
+    def test_contains_unique_identifier_metadata(self):
+        manifest = {
+            "models": [
+                {
+                    "name": "tenant_daily",
+                    "properties": {
+                        "uniqueIdentifier": "tenant_id, ds",
+                        "uniqueIdentifierMeaning": "一个租户在一个业务日期的一条快照。",
+                    },
+                    "columns": [
+                        {"name": "tenant_id", "type": "STRING"},
+                        {"name": "ds", "type": "STRING"},
+                    ],
+                }
+            ]
+        }
+        text = describe_schema(manifest)
+        assert "Unique identifier: tenant_id, ds" in text
+        assert "Unique identifier meaning: 一个租户在一个业务日期的一条快照。" in text
+
     def test_contains_partition_metadata(self):
         manifest = {
             "models": [

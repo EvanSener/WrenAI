@@ -134,6 +134,10 @@ descriptions are preserved by default while structure and partition metadata
 are refreshed. Use `--replace-descriptions` to replace curated descriptions
 with source table comments.
 
+Generated models also include empty model-level `properties.unique_identifier`
+and `properties.unique_identifier_meaning` fields. Fill them manually with the
+finest-grain business key and its meaning.
+
 ---
 
 ## `wren docs` — Connection Info

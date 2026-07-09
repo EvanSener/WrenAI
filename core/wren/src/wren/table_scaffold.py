@@ -102,7 +102,11 @@ def model_metadata_from_table(
             }
         )
 
-    model_properties: dict[str, Any] = {"description": model_description}
+    model_properties: dict[str, Any] = {
+        "description": model_description,
+        "unique_identifier": "",
+        "unique_identifier_meaning": "",
+    }
     if partition_columns:
         model_properties["partition_columns"] = partition_columns
     if latest_partition_column:
@@ -138,7 +142,7 @@ def merge_existing_semantics(
     existing_props = existing.get("properties") or {}
     new_props = metadata.get("properties") or {}
     if isinstance(existing_props, dict):
-        model_props = {**existing_props, **new_props}
+        model_props = _merge_properties(existing_props, new_props)
         if preserve_descriptions and existing_props.get("description"):
             model_props["description"] = existing_props["description"]
         merged["properties"] = model_props
@@ -158,12 +162,21 @@ def merge_existing_semantics(
         new_col_props = col.get("properties") or {}
         if isinstance(existing_col_props, dict):
             col = dict(col)
-            col_props = {**existing_col_props, **new_col_props}
+            col_props = _merge_properties(existing_col_props, new_col_props)
             if preserve_descriptions and existing_col_props.get("description"):
                 col_props["description"] = existing_col_props["description"]
             col["properties"] = col_props
         merged_cols.append(col)
     merged["columns"] = merged_cols
+    return merged
+
+
+def _merge_properties(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in generated.items():
+        if value in (None, "") and existing.get(key) not in (None, ""):
+            continue
+        merged[key] = value
     return merged
 
 

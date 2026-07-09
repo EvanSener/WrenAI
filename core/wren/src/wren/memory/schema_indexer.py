@@ -86,6 +86,16 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         lines.append(f"  Data scope: {data_scope}")
+    unique_identifier = _prop_value(model, "uniqueIdentifier", "unique_identifier")
+    if unique_identifier:
+        lines.append(f"  Unique identifier: {unique_identifier}")
+    unique_identifier_meaning = _prop_value(
+        model,
+        "uniqueIdentifierMeaning",
+        "unique_identifier_meaning",
+    )
+    if unique_identifier_meaning:
+        lines.append(f"  Unique identifier meaning: {unique_identifier_meaning}")
     partition_columns = _format_values(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
@@ -297,6 +307,16 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         parts.append(f". Data scope: {data_scope}")
+    unique_identifier = _prop_value(model, "uniqueIdentifier", "unique_identifier")
+    if unique_identifier:
+        parts.append(f". Unique identifier: {unique_identifier}")
+    unique_identifier_meaning = _prop_value(
+        model,
+        "uniqueIdentifierMeaning",
+        "unique_identifier_meaning",
+    )
+    if unique_identifier_meaning:
+        parts.append(f". Unique identifier meaning: {unique_identifier_meaning}")
     partition_columns = _format_values(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )

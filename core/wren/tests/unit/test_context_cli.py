@@ -614,6 +614,8 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     ]
     assert metadata["columns"][0]["type"] == "STRING"
     assert metadata["columns"][1]["type"] == "DECIMAL(18,2)"
+    assert metadata["properties"]["unique_identifier"] == ""
+    assert metadata["properties"]["unique_identifier_meaning"] == ""
     assert metadata["properties"]["partition_columns"] == ["ds"]
     assert metadata["properties"]["default_partition_filter"] == {
         "column": "ds",
@@ -650,6 +652,8 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
         "name: tenant_order_daily\n"
         "properties:\n"
         "  description: 人工维护的订单日表口径。\n"
+        "  unique_identifier: tenant_id, ds\n"
+        "  unique_identifier_meaning: 一个租户在一个业务日期的一条快照。\n"
         "table_reference:\n"
         "  table: dws_tenant_order_df\n"
         "columns:\n"
@@ -680,6 +684,11 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
     assert metadata["properties"]["description"] == "人工维护的订单日表口径。"
+    assert metadata["properties"]["unique_identifier"] == "tenant_id, ds"
+    assert (
+        metadata["properties"]["unique_identifier_meaning"]
+        == "一个租户在一个业务日期的一条快照。"
+    )
     assert metadata["properties"]["partition_columns"] == ["ds"]
     by_name = {col["name"]: col for col in metadata["columns"]}
     assert by_name["tenant_id"]["properties"]["description"] == "人工维护的租户 ID。"
