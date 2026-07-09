@@ -11,7 +11,10 @@ This is a discovery stub. The actual workflow guides and prompt helpers
 live inside the `wren` CLI itself, so they always match the installed
 wrenai version (no skill cache, no version drift).
 
-Install: `pip install wrenai`.
+Use the existing `wren` command. Do not run `pip install wrenai` as part of
+normal workflows, because that can replace or shadow a locally installed
+source-build CLI. If `wren` is missing, stop and ask the user how they want it
+installed.
 
 ## Workflow guides
 
