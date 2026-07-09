@@ -381,28 +381,33 @@ class TestDescribeSchema:
         assert "[accepted values: placed, shipped, completed]" in text
         assert "[test status: verified]" in text
 
-    def test_contains_unique_identifier_metadata(self):
+    def test_contains_row_metadata(self):
         manifest = {
             "models": [
                 {
                     "name": "tenant_daily",
                     "properties": {
-                        "uniqueIdentifierColumns": [
-                            {"name": "tenant_id"},
-                            {"name": "ds"},
-                        ],
-                        "uniqueIdentifierMeaning": "一个租户在一个业务日期的一条快照。",
+                        "rowDescription": "一个租户在一个业务日期的一条快照。",
+                    },
+                    "tableReference": {
+                        "table": "tenant_daily",
+                        "description": "租户每日快照物理表",
                     },
                     "columns": [
-                        {"name": "tenant_id", "type": "STRING"},
+                        {
+                            "name": "tenant_id",
+                            "type": "STRING",
+                            "properties": {"isRowUniqueIdentifier": True},
+                        },
                         {"name": "ds", "type": "STRING"},
                     ],
                 }
             ]
         }
         text = describe_schema(manifest)
-        assert "Unique identifier columns: tenant_id, ds" in text
-        assert "Unique identifier meaning: 一个租户在一个业务日期的一条快照。" in text
+        assert "Row description: 一个租户在一个业务日期的一条快照。" in text
+        assert "Table description: 租户每日快照物理表" in text
+        assert "tenant_id (STRING) [row unique identifier]" in text
 
     def test_contains_partition_metadata(self):
         manifest = {
@@ -411,15 +416,6 @@ class TestDescribeSchema:
                     "name": "tenant_daily",
                     "properties": {
                         "description": "租户每日快照",
-                        "partitionColumns": [
-                            {
-                                "name": "ds",
-                                "type": "STRING",
-                                "properties": {
-                                    "description": "日期分区；未指定时默认查询最新分区。"
-                                },
-                            }
-                        ],
                     },
                     "columns": [
                         {
@@ -429,21 +425,22 @@ class TestDescribeSchema:
                         {
                             "name": "ds",
                             "type": "STRING",
-                            "properties": {"description": "日期分区"},
+                            "properties": {
+                                "description": "日期分区；未指定时默认查询最新分区。",
+                                "isPartition": True,
+                                "partitionDefault": "max_pt",
+                            },
                         },
                     ],
                 }
             ]
         }
         text = describe_schema(manifest)
-        assert (
-            "Partition columns: ds (STRING) — 日期分区；未指定时默认查询最新分区。"
-            in text
-        )
+        assert "Partition columns:" not in text
         assert "Default partition filter" not in text
-        assert "ds (STRING) — 日期分区" in text
-        assert "[partition column]" not in text
-        assert "[partition default: max_pt]" not in text
+        assert "ds (STRING) — 日期分区；未指定时默认查询最新分区。" in text
+        assert "[partition column]" in text
+        assert "[partition default: max_pt]" in text
 
     def test_contains_list_accepted_values(self):
         manifest = {

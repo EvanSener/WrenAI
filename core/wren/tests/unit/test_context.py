@@ -1584,6 +1584,27 @@ def test_validate_manifest_model_no_description():
 
 
 @pytest.mark.unit
+def test_validate_manifest_model_table_reference_description_counts():
+    model = {
+        **_SEM_MODEL_WITHOUT_DESC,
+        "tableReference": {
+            "schema": "main",
+            "table": "accounts",
+            "description": "账户物理表",
+        },
+        "properties": {"description": "", "rowDescription": ""},
+    }
+    manifest = {
+        "catalog": "wren",
+        "schema": "public",
+        "models": [model],
+    }
+    result = validate_manifest(_b64(manifest), DataSource.duckdb)
+    assert result["errors"] == []
+    assert result["warnings"] == []
+
+
+@pytest.mark.unit
 def test_validate_manifest_view_no_description():
     manifest = {**_SEM_BASE_MANIFEST, "views": [_VIEW_WITHOUT_DESC]}
     result = validate_manifest(_b64(manifest), DataSource.duckdb)

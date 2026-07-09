@@ -79,6 +79,10 @@ def _describe_model(model: dict, lines: list[str]) -> None:
         header += f" — {desc}"
     lines.append(header)
 
+    table_description = _table_reference_description(model)
+    if table_description:
+        lines.append(f"  Table description: {table_description}")
+
     pk = model.get("primaryKey")
     if pk:
         lines.append(f"  Primary key: {pk}")
@@ -86,16 +90,9 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         lines.append(f"  Data scope: {data_scope}")
-    unique_identifier_columns = _format_unique_identifier_columns(model)
-    if unique_identifier_columns:
-        lines.append(f"  Unique identifier columns: {unique_identifier_columns}")
-    unique_identifier_meaning = _prop_value(
-        model,
-        "uniqueIdentifierMeaning",
-        "unique_identifier_meaning",
-    )
-    if unique_identifier_meaning:
-        lines.append(f"  Unique identifier meaning: {unique_identifier_meaning}")
+    row_description = _prop_value(model, "rowDescription", "row_description")
+    if row_description:
+        lines.append(f"  Row description: {row_description}")
     partition_columns = _format_partition_columns(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
@@ -148,6 +145,10 @@ def _describe_column(col: dict, lines: list[str]) -> None:
     partition_default = _prop_value(col, "partitionDefault", "partition_default")
     if partition_default:
         parts.append(f" [partition default: {partition_default}]")
+    if _is_truthy(
+        _prop_raw(col, "isRowUniqueIdentifier", "is_row_unique_identifier")
+    ):
+        parts.append(" [row unique identifier]")
 
     if col.get("notNull"):
         parts.append(" NOT NULL")
@@ -301,22 +302,18 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
         parts.append(f" [{layer} layer]")
     if description:
         parts.append(f": {description}")
+    table_description = _table_reference_description(model)
+    if table_description:
+        parts.append(f". Table description: {table_description}")
     parts.append(f". Columns: {col_summaries}")
     if pk:
         parts.append(f". Primary key: {pk}")
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         parts.append(f". Data scope: {data_scope}")
-    unique_identifier_columns = _format_unique_identifier_columns(model)
-    if unique_identifier_columns:
-        parts.append(f". Unique identifier columns: {unique_identifier_columns}")
-    unique_identifier_meaning = _prop_value(
-        model,
-        "uniqueIdentifierMeaning",
-        "unique_identifier_meaning",
-    )
-    if unique_identifier_meaning:
-        parts.append(f". Unique identifier meaning: {unique_identifier_meaning}")
+    row_description = _prop_value(model, "rowDescription", "row_description")
+    if row_description:
+        parts.append(f". Row description: {row_description}")
     partition_columns = _format_partition_columns(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
@@ -370,6 +367,10 @@ def _column_record(col: dict, model_name: str, mdl_h: str, now: datetime) -> dic
     partition_default = _prop_value(col, "partitionDefault", "partition_default")
     if partition_default:
         parts.append(f". Partition default: {partition_default}")
+    if _is_truthy(
+        _prop_raw(col, "isRowUniqueIdentifier", "is_row_unique_identifier")
+    ):
+        parts.append(". Row unique identifier")
     constraints = _column_constraints(col)
     if constraints:
         parts.append(f". Constraints: {', '.join(constraints)}")
@@ -555,6 +556,14 @@ def _prop_description(obj: dict) -> str:
     return _prop_value(obj, "description")
 
 
+def _table_reference_description(model: dict) -> str:
+    table_ref = model.get("tableReference") or model.get("table_reference")
+    if not isinstance(table_ref, dict):
+        return ""
+    value = table_ref.get("description")
+    return str(value).strip() if value not in (None, "") else ""
+
+
 def _prop_value(obj: dict, *keys: str) -> str:
     props = obj.get("properties") or {}
     if not isinstance(props, dict):
@@ -626,27 +635,6 @@ def _format_partition_columns(value) -> str:
                     parts.append(part)
         return ", ".join(parts)
     return str(value).strip()
-
-
-def _format_unique_identifier_columns(model: dict) -> str:
-    value = _prop_raw(
-        model,
-        "uniqueIdentifierColumns",
-        "unique_identifier_columns",
-    )
-    names: list[str] = []
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        for item in value:
-            if isinstance(item, dict):
-                name = str(item.get("name") or "").strip()
-            else:
-                name = str(item).strip()
-            if name:
-                names.append(name)
-    legacy = _prop_value(model, "uniqueIdentifier", "unique_identifier")
-    if legacy and not names:
-        names = [part.strip() for part in legacy.split(",") if part.strip()]
-    return ", ".join(names)
 
 
 def _is_truthy(value) -> bool:

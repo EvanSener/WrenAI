@@ -126,22 +126,22 @@ wren context add-table dws_order_daily_df --force --replace-descriptions
 The command builds `target/mdl.json` after writing by default. Use `--no-build`
 to only write the model YAML. `--dry-run` prints the generated YAML without
 writing. MaxCompute partition columns are kept as queryable columns. Their
-partition semantics are recorded once under model
-`properties.partition_columns`, with each entry carrying `name`, `type`, and
-`properties.description`.
+partition semantics are recorded on the column itself with
+`properties.is_partition: true`. The latest `ds` partition also carries
+`properties.partition_default: max_pt`.
 
 MaxCompute model names are derived from `table_reference.table`, so generated
 `name` stays aligned with the physical table reference.
+
+Source table comments are stored under `table_reference.description`. Model
+`properties.description` and `properties.row_description` are generated as
+empty placeholders for manual business semantics. Row-level unique identifiers
+are marked on columns with `properties.is_row_unique_identifier: true`.
 
 When `--force` refreshes an existing model, existing model and column
 descriptions are preserved by default while structure and partition metadata
 are refreshed. Use `--replace-descriptions` to replace curated descriptions
 with source table comments.
-
-Generated models also include empty model-level
-`properties.unique_identifier_columns` and
-`properties.unique_identifier_meaning` fields. Fill them manually with the
-finest-grain business key columns and their meaning.
 
 ---
 

@@ -1558,15 +1558,31 @@ def _prop_description(item: dict) -> str | None:
     return (item.get("properties") or {}).get("description")
 
 
+def _model_semantic_description(model: dict) -> str | None:
+    props = model.get("properties") or {}
+    if isinstance(props, dict):
+        for key in ("description", "rowDescription"):
+            value = props.get(key)
+            if value:
+                return value
+    table_ref = model.get("tableReference") or {}
+    if isinstance(table_ref, dict):
+        value = table_ref.get("description")
+        if value:
+            return value
+    return None
+
+
 def _check_descriptions(manifest: dict, *, strict: bool = False) -> list[str]:
     warnings: list[str] = []
 
     for model in manifest.get("models", []):
         name = model.get("name", "<unknown>")
-        if not _prop_description(model):
+        if not _model_semantic_description(model):
             warnings.append(
                 f"Model '{name}' has no description — "
-                "add properties.description to improve memory search and agent comprehension"
+                "add properties.description, properties.rowDescription, "
+                "or tableReference.description to improve memory search and agent comprehension"
             )
         if strict:
             for col in model.get("columns", []):

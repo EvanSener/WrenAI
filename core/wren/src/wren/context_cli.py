@@ -183,7 +183,7 @@ def add_table(
         typer.Option(
             "--description",
             "-d",
-            help="Business-facing model description. Defaults to table comment or a placeholder.",
+            help="Optional business-facing model description.",
         ),
     ] = None,
     force: Annotated[

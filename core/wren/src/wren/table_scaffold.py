@@ -59,7 +59,6 @@ def model_metadata_from_table(
     """Build a ``models/<name>/metadata.yml`` payload."""
     validate_model_name(model_name)
     partition_columns = [col for col in table.columns if col.is_partition]
-    partition_column_names = [col.name for col in partition_columns]
     latest_partition_column = next(
         (
             col.name
@@ -68,17 +67,11 @@ def model_metadata_from_table(
         ),
         None,
     )
-    model_description = description or table.comment
-    if not model_description:
-        model_description = (
-            f"MaxCompute 表 {table.physical_table} 的语义模型。请补充业务口径。"
-        )
-    if partition_column_names and "分区" not in model_description:
-        model_description = (
-            f"{model_description} 按 {', '.join(partition_column_names)} 分区。"
-        )
 
-    table_reference: dict[str, str] = {"table": table.physical_table}
+    table_reference: dict[str, str] = {
+        "table": table.physical_table,
+        "description": table.comment or "",
+    }
     if table_catalog:
         table_reference["catalog"] = table_catalog
     if table_schema:
@@ -86,8 +79,12 @@ def model_metadata_from_table(
 
     columns: list[dict[str, Any]] = []
     for col in table.columns:
-        col_desc = col.comment or f"MaxCompute 字段 {col.name}。请补充业务含义。"
+        col_desc = _column_description(col, latest_partition_column)
         col_properties: dict[str, Any] = {"description": col_desc}
+        if col.is_partition:
+            col_properties["is_partition"] = True
+            if col.name == latest_partition_column:
+                col_properties["partition_default"] = "max_pt"
         columns.append(
             {
                 "name": col.name,
@@ -97,15 +94,9 @@ def model_metadata_from_table(
         )
 
     model_properties: dict[str, Any] = {
-        "description": model_description,
-        "unique_identifier_columns": [{"name": ""}],
-        "unique_identifier_meaning": "",
+        "description": description or "",
+        "row_description": "",
     }
-    if partition_columns:
-        model_properties["partition_columns"] = [
-            _partition_column_metadata(col, latest_partition_column)
-            for col in partition_columns
-        ]
 
     return {
         "name": model_name,
@@ -124,8 +115,8 @@ def merge_existing_semantics(
     """Merge curated semantic properties from an existing model.
 
     Refreshing a live table should update structural metadata while preserving
-    business wording analysts already curated. Generated partition metadata wins
-    because it is derived from the live warehouse schema.
+    business wording analysts already curated. Generated field-level partition
+    metadata wins because it is derived from the live warehouse schema.
     """
     if not isinstance(existing, dict):
         return metadata
@@ -133,11 +124,21 @@ def merge_existing_semantics(
     merged = dict(metadata)
     existing_props = existing.get("properties") or {}
     new_props = metadata.get("properties") or {}
+    row_unique_names = _row_unique_identifier_names_from_model_properties(
+        existing_props
+    )
     if isinstance(existing_props, dict):
         model_props = _merge_properties(existing_props, new_props)
+        legacy_meaning = _first_property_value(
+            existing_props,
+            "unique_identifier_meaning",
+            "uniqueIdentifierMeaning",
+        )
+        if legacy_meaning and not model_props.get("row_description"):
+            model_props["row_description"] = legacy_meaning
         if preserve_descriptions and existing_props.get("description"):
             model_props["description"] = existing_props["description"]
-        _drop_deprecated_model_partition_properties(model_props)
+        _drop_deprecated_model_properties(model_props)
         merged["properties"] = model_props
 
     existing_cols = {
@@ -158,86 +159,91 @@ def merge_existing_semantics(
             col_props = _merge_properties(existing_col_props, new_col_props)
             if preserve_descriptions and existing_col_props.get("description"):
                 col_props["description"] = existing_col_props["description"]
-            _drop_deprecated_column_partition_properties(col_props)
+            if col.get("name") in row_unique_names:
+                col_props["is_row_unique_identifier"] = True
             col["properties"] = col_props
         merged_cols.append(col)
     merged["columns"] = merged_cols
     return merged
 
 
-def _partition_column_metadata(
+def _column_description(
     col: IntrospectedColumn,
     latest_partition_column: str | None,
-) -> dict[str, Any]:
-    description = col.comment or f"MaxCompute 分区字段 {col.name}。请补充业务含义。"
-    if col.name == latest_partition_column and "默认查询最新分区" not in description:
+) -> str:
+    if col.is_partition:
+        description = col.comment or f"MaxCompute 分区字段 {col.name}。请补充业务含义。"
+    else:
+        description = col.comment or f"MaxCompute 字段 {col.name}。请补充业务含义。"
+    if (
+        col.is_partition
+        and col.name == latest_partition_column
+        and "默认查询最新分区" not in description
+    ):
         description = f"{description.rstrip('。')}；未指定时默认查询最新分区。"
-    return {
-        "name": col.name,
-        "type": col.type,
-        "properties": {"description": description},
-    }
+    return description
 
 
-def _drop_deprecated_model_partition_properties(properties: dict[str, Any]) -> None:
-    for key in ("default_partition_filter", "defaultPartitionFilter"):
-        properties.pop(key, None)
-
-
-def _drop_deprecated_column_partition_properties(properties: dict[str, Any]) -> None:
+def _drop_deprecated_model_properties(properties: dict[str, Any]) -> None:
     for key in (
-        "is_partition",
-        "isPartition",
-        "partition_default",
-        "partitionDefault",
+        "partition_columns",
+        "partitionColumns",
+        "default_partition_filter",
+        "defaultPartitionFilter",
+        "unique_identifier",
+        "uniqueIdentifier",
+        "unique_identifier_columns",
+        "uniqueIdentifierColumns",
+        "unique_identifier_meaning",
+        "uniqueIdentifierMeaning",
     ):
         properties.pop(key, None)
 
 
 def _merge_properties(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
     merged = dict(existing)
-    if (
-        "unique_identifier" in merged
-        and "unique_identifier_columns" not in merged
-    ):
-        migrated = _unique_identifier_columns_from_legacy(merged.pop("unique_identifier"))
-        if migrated:
-            merged["unique_identifier_columns"] = migrated
     for key, value in generated.items():
         if value in (None, "") and existing.get(key) not in (None, ""):
-            continue
-        if (
-            key == "unique_identifier_columns"
-            and _unique_identifier_columns_has_value(merged.get(key))
-        ):
             continue
         merged[key] = value
     return merged
 
 
-def _unique_identifier_columns_has_value(value: Any) -> bool:
-    if not isinstance(value, list):
-        return False
-    for item in value:
-        if isinstance(item, dict) and str(item.get("name") or "").strip():
-            return True
-    return False
+def _first_property_value(properties: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = properties.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
-def _unique_identifier_columns_from_legacy(value: Any) -> list[dict[str, str]]:
+def _row_unique_identifier_names_from_model_properties(
+    properties: Any,
+) -> set[str]:
+    if not isinstance(properties, dict):
+        return set()
+    names: set[str] = set()
+    for key in ("unique_identifier_columns", "uniqueIdentifierColumns"):
+        names.update(_unique_identifier_column_names(properties.get(key)))
+    for key in ("unique_identifier", "uniqueIdentifier"):
+        names.update(_unique_identifier_column_names(properties.get(key)))
+    return names
+
+
+def _unique_identifier_column_names(value: Any) -> set[str]:
     if isinstance(value, str):
-        return [
-            {"name": part.strip()}
-            for part in value.split(",")
-            if part.strip()
-        ]
+        return {part.strip() for part in value.split(",") if part.strip()}
     if isinstance(value, list):
-        return [
-            {"name": str(part).strip()}
-            for part in value
-            if str(part).strip()
-        ]
-    return []
+        names: set[str] = set()
+        for item in value:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                name = str(item).strip()
+            if name:
+                names.add(name)
+        return names
+    return set()
 
 
 def write_model_metadata(

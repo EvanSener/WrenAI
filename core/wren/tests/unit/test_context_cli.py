@@ -611,7 +611,10 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
         (tmp_path / "models" / "dws_tenant_order_df" / "metadata.yml").read_text()
     )
     assert metadata["name"] == "dws_tenant_order_df"
-    assert metadata["table_reference"] == {"table": "dws_tenant_order_df"}
+    assert metadata["table_reference"] == {
+        "table": "dws_tenant_order_df",
+        "description": "租户订单每日汇总",
+    }
     assert [col["name"] for col in metadata["columns"]] == [
         "tenant_id",
         "amount",
@@ -619,17 +622,14 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     ]
     assert metadata["columns"][0]["type"] == "STRING"
     assert metadata["columns"][1]["type"] == "DECIMAL(18,2)"
-    assert metadata["properties"]["unique_identifier_columns"] == [{"name": ""}]
-    assert metadata["properties"]["unique_identifier_meaning"] == ""
-    assert metadata["properties"]["partition_columns"] == [
-        {
-            "name": "ds",
-            "type": "STRING",
-            "properties": {"description": "业务日期；未指定时默认查询最新分区。"},
-        }
-    ]
+    assert metadata["properties"] == {"description": "", "row_description": ""}
+    assert "partition_columns" not in metadata["properties"]
     assert "default_partition_filter" not in metadata["properties"]
-    assert metadata["columns"][2]["properties"] == {"description": "业务日期"}
+    assert metadata["columns"][2]["properties"] == {
+        "description": "业务日期；未指定时默认查询最新分区。",
+        "is_partition": True,
+        "partition_default": "max_pt",
+    }
 
 
 def test_add_table_refuses_existing_model_without_force(tmp_path, monkeypatch):
@@ -697,31 +697,22 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
     assert metadata["properties"]["description"] == "人工维护的订单日表口径。"
-    assert metadata["properties"]["unique_identifier_columns"] == [
-        {"name": "tenant_id"},
-        {"name": "ds"},
-    ]
     assert "unique_identifier" not in metadata["properties"]
-    assert (
-        metadata["properties"]["unique_identifier_meaning"]
-        == "一个租户在一个业务日期的一条快照。"
-    )
-    assert metadata["properties"]["partition_columns"] == [
-        {
-            "name": "ds",
-            "type": "STRING",
-            "properties": {"description": "业务日期；未指定时默认查询最新分区。"},
-        }
-    ]
+    assert "unique_identifier_columns" not in metadata["properties"]
+    assert "unique_identifier_meaning" not in metadata["properties"]
+    assert metadata["properties"]["row_description"] == "一个租户在一个业务日期的一条快照。"
+    assert "partition_columns" not in metadata["properties"]
     assert "default_partition_filter" not in metadata["properties"]
     by_name = {col["name"]: col for col in metadata["columns"]}
     assert by_name["tenant_id"]["properties"]["description"] == "人工维护的租户 ID。"
+    assert by_name["tenant_id"]["properties"]["is_row_unique_identifier"] is True
     assert by_name["ds"]["properties"]["description"] == "人工维护的分区日期。"
-    assert "is_partition" not in by_name["ds"]["properties"]
-    assert "partition_default" not in by_name["ds"]["properties"]
+    assert by_name["ds"]["properties"]["is_row_unique_identifier"] is True
+    assert by_name["ds"]["properties"]["is_partition"] is True
+    assert by_name["ds"]["properties"]["partition_default"] == "max_pt"
 
 
-def test_add_table_force_preserves_existing_unique_identifier_columns(
+def test_add_table_force_migrates_existing_unique_identifier_columns_to_columns(
     tmp_path, monkeypatch
 ):
     _install_fake_odps(monkeypatch)
@@ -757,10 +748,10 @@ def test_add_table_force_preserves_existing_unique_identifier_columns(
 
     assert result.exit_code == 0, result.output
     metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
-    assert metadata["properties"]["unique_identifier_columns"] == [
-        {"name": "tenant_id"},
-        {"name": "ds"},
-    ]
+    assert "unique_identifier_columns" not in metadata["properties"]
+    by_name = {col["name"]: col for col in metadata["columns"]}
+    assert by_name["tenant_id"]["properties"]["is_row_unique_identifier"] is True
+    assert by_name["ds"]["properties"]["is_row_unique_identifier"] is True
 
 
 def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
@@ -783,14 +774,14 @@ def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
     metadata = yaml.safe_load(result.output)
     assert metadata["name"] == "dwd_orders"
     assert metadata["table_reference"]["table"] == "dwd_orders"
-    assert metadata["properties"]["unique_identifier_columns"] == [{"name": ""}]
-    assert metadata["properties"]["partition_columns"] == [
-        {
-            "name": "ds",
-            "type": "STRING",
-            "properties": {"description": "业务日期；未指定时默认查询最新分区。"},
-        }
-    ]
+    assert metadata["properties"] == {"description": "", "row_description": ""}
+    assert "partition_columns" not in metadata["properties"]
+    by_name = {col["name"]: col for col in metadata["columns"]}
+    assert by_name["ds"]["properties"] == {
+        "description": "业务日期；未指定时默认查询最新分区。",
+        "is_partition": True,
+        "partition_default": "max_pt",
+    }
     assert not (tmp_path / "models" / "dwd_orders" / "metadata.yml").exists()
 
 
