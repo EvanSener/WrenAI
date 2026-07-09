@@ -614,6 +614,13 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     ]
     assert metadata["columns"][0]["type"] == "STRING"
     assert metadata["columns"][1]["type"] == "DECIMAL(18,2)"
+    assert metadata["properties"]["partition_columns"] == ["ds"]
+    assert metadata["properties"]["default_partition_filter"] == {
+        "column": "ds",
+        "expression": "ds = max_pt('dws_tenant_order_df')",
+    }
+    assert metadata["columns"][2]["properties"]["is_partition"] is True
+    assert metadata["columns"][2]["properties"]["partition_default"] == "max_pt"
     assert "默认查询最新分区" in metadata["columns"][2]["properties"]["description"]
 
 
@@ -654,6 +661,7 @@ def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
     metadata = yaml.safe_load(result.output)
     assert metadata["name"] == "dwd_orders"
     assert metadata["table_reference"]["table"] == "dwd_orders"
+    assert metadata["properties"]["partition_columns"] == ["ds"]
     assert not (tmp_path / "models" / "dwd_orders" / "metadata.yml").exists()
 
 

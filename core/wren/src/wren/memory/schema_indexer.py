@@ -86,6 +86,16 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         lines.append(f"  Data scope: {data_scope}")
+    partition_columns = _format_values(
+        _prop_raw(model, "partitionColumns", "partition_columns")
+    )
+    if partition_columns:
+        lines.append(f"  Partition columns: {partition_columns}")
+    partition_filter = _format_partition_filter(
+        _prop_raw(model, "defaultPartitionFilter", "default_partition_filter")
+    )
+    if partition_filter:
+        lines.append(f"  Default partition filter: {partition_filter}")
 
     cols = model.get("columns", [])
     if cols:
@@ -122,6 +132,12 @@ def _describe_column(col: dict, lines: list[str]) -> None:
     )
     if accepted_values:
         parts.append(f" [accepted values: {accepted_values}]")
+
+    if _is_truthy(_prop_raw(col, "isPartition", "is_partition")):
+        parts.append(" [partition column]")
+    partition_default = _prop_value(col, "partitionDefault", "partition_default")
+    if partition_default:
+        parts.append(f" [partition default: {partition_default}]")
 
     if col.get("notNull"):
         parts.append(" NOT NULL")
@@ -281,6 +297,16 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
     data_scope = _prop_value(model, "dataScope", "data_scope")
     if data_scope:
         parts.append(f". Data scope: {data_scope}")
+    partition_columns = _format_values(
+        _prop_raw(model, "partitionColumns", "partition_columns")
+    )
+    if partition_columns:
+        parts.append(f". Partition columns: {partition_columns}")
+    partition_filter = _format_partition_filter(
+        _prop_raw(model, "defaultPartitionFilter", "default_partition_filter")
+    )
+    if partition_filter:
+        parts.append(f". Default partition filter: {partition_filter}")
     text = "".join(parts) + "."
 
     return {
@@ -319,6 +345,11 @@ def _column_record(col: dict, model_name: str, mdl_h: str, now: datetime) -> dic
     )
     if accepted_values:
         parts.append(f". Accepted values: {accepted_values}")
+    if _is_truthy(_prop_raw(col, "isPartition", "is_partition")):
+        parts.append(". Partition column")
+    partition_default = _prop_value(col, "partitionDefault", "partition_default")
+    if partition_default:
+        parts.append(f". Partition default: {partition_default}")
     constraints = _column_constraints(col)
     if constraints:
         parts.append(f". Constraints: {', '.join(constraints)}")
@@ -533,6 +564,28 @@ def _format_values(value) -> str:
     if isinstance(value, Sequence) and not isinstance(value, bytes):
         return ", ".join(str(part).strip() for part in value if str(part).strip())
     return str(value).strip()
+
+
+def _format_partition_filter(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, dict):
+        expression = value.get("expression")
+        if expression:
+            return str(expression).strip()
+        column = value.get("column")
+        function = value.get("function")
+        if column and function:
+            return f"{column} = {function}(table)"
+    return str(value).strip()
+
+
+def _is_truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 def _column_constraints(col: dict) -> list[str]:

@@ -58,16 +58,24 @@ def model_metadata_from_table(
 ) -> dict[str, Any]:
     """Build a ``models/<name>/metadata.yml`` payload."""
     validate_model_name(model_name)
-    has_latest_partition = any(
-        col.name.lower() == _LATEST_PARTITION_COLUMN for col in table.columns
+    partition_columns = [col.name for col in table.columns if col.is_partition]
+    latest_partition_column = next(
+        (
+            name
+            for name in partition_columns
+            if name.lower() == _LATEST_PARTITION_COLUMN
+        ),
+        None,
     )
     model_description = description or table.comment
     if not model_description:
         model_description = (
             f"MaxCompute 表 {table.physical_table} 的语义模型。请补充业务口径。"
         )
-    if has_latest_partition and "分区" not in model_description:
-        model_description = f"{model_description} 按 ds 分区。"
+    if partition_columns and "分区" not in model_description:
+        model_description = (
+            f"{model_description} 按 {', '.join(partition_columns)} 分区。"
+        )
 
     table_reference: dict[str, str] = {"table": table.physical_table}
     if table_catalog:
@@ -78,20 +86,34 @@ def model_metadata_from_table(
     columns: list[dict[str, Any]] = []
     for col in table.columns:
         col_desc = col.comment or f"MaxCompute 字段 {col.name}。请补充业务含义。"
-        if col.name.lower() == _LATEST_PARTITION_COLUMN or col.is_partition:
+        col_properties: dict[str, Any] = {"description": col_desc}
+        if col.is_partition:
             suffix = "分区字段；未指定时默认查询最新分区。"
             col_desc = f"{col_desc.rstrip('。')}；{suffix}"
+            col_properties["description"] = col_desc
+            col_properties["is_partition"] = True
+            if col.name == latest_partition_column:
+                col_properties["partition_default"] = "max_pt"
         columns.append(
             {
                 "name": col.name,
                 "type": col.type,
-                "properties": {"description": col_desc},
+                "properties": col_properties,
             }
         )
 
+    model_properties: dict[str, Any] = {"description": model_description}
+    if partition_columns:
+        model_properties["partition_columns"] = partition_columns
+    if latest_partition_column:
+        model_properties["default_partition_filter"] = {
+            "column": latest_partition_column,
+            "expression": f"{latest_partition_column} = max_pt('{table.physical_table}')",
+        }
+
     return {
         "name": model_name,
-        "properties": {"description": model_description},
+        "properties": model_properties,
         "table_reference": table_reference,
         "columns": columns,
     }
