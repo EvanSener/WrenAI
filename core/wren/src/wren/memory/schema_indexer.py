@@ -93,6 +93,9 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     row_description = _prop_value(model, "rowDescription", "row_description")
     if row_description:
         lines.append(f"  Row description: {row_description}")
+    flag = _prop_value(model, "flag")
+    if flag:
+        lines.append(f"  Flag: {flag}")
     partition_columns = _format_partition_columns(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
@@ -145,9 +148,7 @@ def _describe_column(col: dict, lines: list[str]) -> None:
     partition_default = _prop_value(col, "partitionDefault", "partition_default")
     if partition_default:
         parts.append(f" [partition default: {partition_default}]")
-    if _is_truthy(
-        _prop_raw(col, "isRowUniqueIdentifier", "is_row_unique_identifier")
-    ):
+    if _is_row_unique_id(col):
         parts.append(" [row unique identifier]")
 
     if col.get("notNull"):
@@ -314,6 +315,9 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
     row_description = _prop_value(model, "rowDescription", "row_description")
     if row_description:
         parts.append(f". Row description: {row_description}")
+    flag = _prop_value(model, "flag")
+    if flag:
+        parts.append(f". Flag: {flag}")
     partition_columns = _format_partition_columns(
         _prop_raw(model, "partitionColumns", "partition_columns")
     )
@@ -367,9 +371,7 @@ def _column_record(col: dict, model_name: str, mdl_h: str, now: datetime) -> dic
     partition_default = _prop_value(col, "partitionDefault", "partition_default")
     if partition_default:
         parts.append(f". Partition default: {partition_default}")
-    if _is_truthy(
-        _prop_raw(col, "isRowUniqueIdentifier", "is_row_unique_identifier")
-    ):
+    if _is_row_unique_id(col):
         parts.append(". Row unique identifier")
     constraints = _column_constraints(col)
     if constraints:
@@ -635,6 +637,18 @@ def _format_partition_columns(value) -> str:
                     parts.append(part)
         return ", ".join(parts)
     return str(value).strip()
+
+
+def _is_row_unique_id(col: dict) -> bool:
+    return _is_truthy(
+        _prop_raw(
+            col,
+            "isRowUniqueId",
+            "is_row_unique_id",
+            "isRowUniqueIdentifier",
+            "is_row_unique_identifier",
+        )
+    )
 
 
 def _is_truthy(value) -> bool:

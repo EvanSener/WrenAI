@@ -622,7 +622,11 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     ]
     assert metadata["columns"][0]["type"] == "STRING"
     assert metadata["columns"][1]["type"] == "DECIMAL(18,2)"
-    assert metadata["properties"] == {"description": "", "row_description": ""}
+    assert metadata["properties"] == {
+        "description": "",
+        "flag": "",
+        "row_description": "",
+    }
     assert "partition_columns" not in metadata["properties"]
     assert "default_partition_filter" not in metadata["properties"]
     assert metadata["columns"][2]["properties"] == {
@@ -705,9 +709,9 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert "default_partition_filter" not in metadata["properties"]
     by_name = {col["name"]: col for col in metadata["columns"]}
     assert by_name["tenant_id"]["properties"]["description"] == "人工维护的租户 ID。"
-    assert by_name["tenant_id"]["properties"]["is_row_unique_identifier"] is True
+    assert by_name["tenant_id"]["properties"]["is_row_unique_id"] is True
     assert by_name["ds"]["properties"]["description"] == "人工维护的分区日期。"
-    assert by_name["ds"]["properties"]["is_row_unique_identifier"] is True
+    assert by_name["ds"]["properties"]["is_row_unique_id"] is True
     assert by_name["ds"]["properties"]["is_partition"] is True
     assert by_name["ds"]["properties"]["partition_default"] == "max_pt"
 
@@ -750,8 +754,8 @@ def test_add_table_force_migrates_existing_unique_identifier_columns_to_columns(
     metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
     assert "unique_identifier_columns" not in metadata["properties"]
     by_name = {col["name"]: col for col in metadata["columns"]}
-    assert by_name["tenant_id"]["properties"]["is_row_unique_identifier"] is True
-    assert by_name["ds"]["properties"]["is_row_unique_identifier"] is True
+    assert by_name["tenant_id"]["properties"]["is_row_unique_id"] is True
+    assert by_name["ds"]["properties"]["is_row_unique_id"] is True
 
 
 def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
@@ -774,7 +778,11 @@ def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
     metadata = yaml.safe_load(result.output)
     assert metadata["name"] == "dwd_orders"
     assert metadata["table_reference"]["table"] == "dwd_orders"
-    assert metadata["properties"] == {"description": "", "row_description": ""}
+    assert metadata["properties"] == {
+        "description": "",
+        "flag": "",
+        "row_description": "",
+    }
     assert "partition_columns" not in metadata["properties"]
     by_name = {col["name"]: col for col in metadata["columns"]}
     assert by_name["ds"]["properties"] == {

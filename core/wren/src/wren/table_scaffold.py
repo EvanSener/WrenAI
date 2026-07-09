@@ -95,6 +95,7 @@ def model_metadata_from_table(
 
     model_properties: dict[str, Any] = {
         "description": description or "",
+        "flag": "",
         "row_description": "",
     }
 
@@ -160,7 +161,8 @@ def merge_existing_semantics(
             if preserve_descriptions and existing_col_props.get("description"):
                 col_props["description"] = existing_col_props["description"]
             if col.get("name") in row_unique_names:
-                col_props["is_row_unique_identifier"] = True
+                col_props["is_row_unique_id"] = True
+            _drop_deprecated_column_properties(col_props)
             col["properties"] = col_props
         merged_cols.append(col)
     merged["columns"] = merged_cols
@@ -198,6 +200,16 @@ def _drop_deprecated_model_properties(properties: dict[str, Any]) -> None:
         "uniqueIdentifierMeaning",
     ):
         properties.pop(key, None)
+
+
+def _drop_deprecated_column_properties(properties: dict[str, Any]) -> None:
+    for old_key, new_key in (
+        ("is_row_unique_identifier", "is_row_unique_id"),
+        ("isRowUniqueIdentifier", "isRowUniqueId"),
+    ):
+        old_value = properties.pop(old_key, None)
+        if old_value not in (None, "") and new_key not in properties:
+            properties[new_key] = old_value
 
 
 def _merge_properties(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:

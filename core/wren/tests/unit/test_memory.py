@@ -387,6 +387,7 @@ class TestDescribeSchema:
                 {
                     "name": "tenant_daily",
                     "properties": {
+                        "flag": "ten_",
                         "rowDescription": "一个租户在一个业务日期的一条快照。",
                     },
                     "tableReference": {
@@ -397,7 +398,7 @@ class TestDescribeSchema:
                         {
                             "name": "tenant_id",
                             "type": "STRING",
-                            "properties": {"isRowUniqueIdentifier": True},
+                            "properties": {"isRowUniqueId": True},
                         },
                         {"name": "ds", "type": "STRING"},
                     ],
@@ -405,6 +406,7 @@ class TestDescribeSchema:
             ]
         }
         text = describe_schema(manifest)
+        assert "Flag: ten_" in text
         assert "Row description: 一个租户在一个业务日期的一条快照。" in text
         assert "Table description: 租户每日快照物理表" in text
         assert "tenant_id (STRING) [row unique identifier]" in text

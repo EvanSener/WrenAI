@@ -134,9 +134,10 @@ MaxCompute model names are derived from `table_reference.table`, so generated
 `name` stays aligned with the physical table reference.
 
 Source table comments are stored under `table_reference.description`. Model
-`properties.description` and `properties.row_description` are generated as
-empty placeholders for manual business semantics. Row-level unique identifiers
-are marked on columns with `properties.is_row_unique_identifier: true`.
+`properties.description`, `properties.flag`, and
+`properties.row_description` are generated as placeholders for manual business
+semantics. Row-level unique identifiers are marked on columns with
+`properties.is_row_unique_id: true`.
 
 When `--force` refreshes an existing model, existing model and column
 descriptions are preserved by default while structure and partition metadata
