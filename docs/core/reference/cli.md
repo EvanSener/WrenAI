@@ -110,6 +110,22 @@ wren context upgrade --to 5      # target a specific version
 To migrate `instructions.md` and the LanceDB memory into `knowledge/`, see
 [Migration](./migration.md).
 
+## `wren context add-table`
+
+Add a live MaxCompute table to the current Wren project by reading table
+metadata from the project's bound profile and writing
+`models/<model>/metadata.yml`.
+
+```bash
+wren context add-table dws_order_daily_df --model order_daily
+wren context add-table dws_order_daily_df --model order_daily --dry-run
+wren context add-table dws_order_daily_df --model order_daily --force
+```
+
+The command builds `target/mdl.json` after writing by default. Use `--no-build`
+to only write the model YAML. `--dry-run` prints the generated YAML without
+writing.
+
 ---
 
 ## `wren docs` — Connection Info

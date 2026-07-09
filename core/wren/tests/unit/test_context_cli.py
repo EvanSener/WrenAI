@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import yaml
 from typer.testing import CliRunner
 
+import wren.profile as profile_mod
 from wren.cli import app
 
 runner = CliRunner()
@@ -503,6 +506,167 @@ def test_build_no_validate(tmp_path):
     assert result.exit_code == 0
     out_file = tmp_path / "target" / "mdl.json"
     assert out_file.exists()
+
+
+# ── wren context add-table ─────────────────────────────────────────────────
+
+
+def _install_fake_odps(monkeypatch):
+    calls = []
+
+    class _Field:
+        def __init__(self, name, type_, comment=None):
+            self.name = name
+            self.type = type_
+            self.comment = comment
+
+    class _Schema:
+        columns = [
+            _Field("tenant_id", "string", "租户 ID"),
+            _Field("amount", "decimal(18,2)", "金额"),
+            _Field("ds", "string", "业务日期"),
+        ]
+        partitions = [_Field("ds", "string", "业务日期")]
+
+    class _Table:
+        table_schema = _Schema()
+        comment = "租户订单每日汇总"
+
+    class ODPS:
+        def __init__(self, access_id, access_key, **kwargs):
+            self.access_id = access_id
+            self.access_key = access_key
+            self.kwargs = kwargs
+            calls.append({"init": kwargs})
+
+        def get_table(self, table_name, **kwargs):
+            calls.append({"table_name": table_name, "kwargs": kwargs})
+            return _Table()
+
+    odps_module = types.ModuleType("odps")
+    odps_module.ODPS = ODPS
+    monkeypatch.setitem(sys.modules, "odps", odps_module)
+    return calls
+
+
+def _make_maxcompute_project(tmp_path: Path, monkeypatch) -> Path:
+    home_dir = tmp_path / ".wren"
+    home_dir.mkdir()
+    monkeypatch.setattr(profile_mod, "_WREN_HOME", home_dir)
+    monkeypatch.setattr(profile_mod, "_PROFILES_FILE", home_dir / "profiles.yml")
+    profile_mod.add_profile(
+        "mc",
+        {
+            "datasource": "maxcompute",
+            "access_id": "ak-id",
+            "access_key": "ak-secret",
+            "project": "real_project",
+            "endpoint": "https://service.cn-hangzhou.maxcompute.aliyun.com/api",
+        },
+        activate=True,
+    )
+    (tmp_path / "wren_project.yml").write_text(
+        "schema_version: 5\n"
+        "name: test\n"
+        "version: '1.0'\n"
+        "catalog: wren\n"
+        "schema: public\n"
+        "data_source: maxcompute\n"
+        "profile: mc\n"
+    )
+    (tmp_path / "relationships.yml").write_text("relationships: []\n")
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "knowledge" / "knowledge.yml").write_text("schema_version: 1\n")
+    return tmp_path
+
+
+def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
+    calls = _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "add-table",
+            "dws_tenant_order_df",
+            "--path",
+            str(tmp_path),
+            "--model",
+            "tenant_order_daily",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "tenant_order_daily" in result.output
+    assert (tmp_path / "target" / "mdl.json").exists()
+    assert calls[-1]["table_name"] == "dws_tenant_order_df"
+
+    metadata = yaml.safe_load(
+        (tmp_path / "models" / "tenant_order_daily" / "metadata.yml").read_text()
+    )
+    assert metadata["name"] == "tenant_order_daily"
+    assert metadata["table_reference"] == {"table": "dws_tenant_order_df"}
+    assert [col["name"] for col in metadata["columns"]] == [
+        "tenant_id",
+        "amount",
+        "ds",
+    ]
+    assert metadata["columns"][0]["type"] == "STRING"
+    assert metadata["columns"][1]["type"] == "DECIMAL(18,2)"
+    assert "默认查询最新分区" in metadata["columns"][2]["properties"]["description"]
+
+
+def test_add_table_refuses_existing_model_without_force(tmp_path, monkeypatch):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    result = runner.invoke(
+        app,
+        ["context", "add-table", "dwd_orders", "--path", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(
+        app,
+        ["context", "add-table", "dwd_orders", "--path", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "--force" in result.output
+
+
+def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "add-table",
+            "dwd_orders",
+            "--path",
+            str(tmp_path),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = yaml.safe_load(result.output)
+    assert metadata["name"] == "dwd_orders"
+    assert metadata["table_reference"]["table"] == "dwd_orders"
+    assert not (tmp_path / "models" / "dwd_orders" / "metadata.yml").exists()
+
+
+def test_add_table_requires_maxcompute_project(tmp_path):
+    _make_valid_project(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["context", "add-table", "orders", "--path", str(tmp_path)],
+    )
+
+    assert result.exit_code == 1
+    assert "MaxCompute projects only" in result.output
 
 
 # ── wren context show ─────────────────────────────────────────────────────

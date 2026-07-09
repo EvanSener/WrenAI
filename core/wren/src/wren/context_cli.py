@@ -149,6 +149,175 @@ def import_cmd(
     typer.echo(f"  wren context build --path {output_path}")
 
 
+@context_app.command("add-table")
+def add_table(
+    table: Annotated[str, typer.Argument(help="Physical table name to add.")],
+    path: ProjectPathOpt = None,
+    model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--model",
+            "-m",
+            help="Wren semantic model name. Defaults to a sanitized table name.",
+        ),
+    ] = None,
+    table_schema: Annotated[
+        Optional[str],
+        typer.Option(
+            "--table-schema",
+            help="Physical source schema for table_reference.schema and PyODPS lookup.",
+        ),
+    ] = None,
+    table_catalog: Annotated[
+        Optional[str],
+        typer.Option(
+            "--table-catalog",
+            help="Physical source catalog/project for table_reference.catalog.",
+        ),
+    ] = None,
+    description: Annotated[
+        Optional[str],
+        typer.Option(
+            "--description",
+            "-d",
+            help="Business-facing model description. Defaults to table comment or a placeholder.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite an existing model metadata file."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print generated model YAML without writing."),
+    ] = False,
+    build_after: Annotated[
+        bool,
+        typer.Option(
+            "--build/--no-build",
+            help="Build target/mdl.json after writing the model.",
+        ),
+    ] = True,
+) -> None:
+    """Add a physical MaxCompute table as a Wren model.
+
+    The command uses the project's bound profile, reads the live MaxCompute
+    table schema, writes ``models/<model>/metadata.yml``, and builds the
+    project by default. It is deliberately source-backed; no manual column
+    copying is required.
+    """
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from wren.context import (  # noqa: PLC0415
+        build_json,
+        discover_project_path,
+        load_project_config,
+        save_target,
+        validate_project,
+    )
+    from wren.model.data_source import DataSource  # noqa: PLC0415
+    from wren.profile import (  # noqa: PLC0415
+        MissingSecretError,
+        expand_profile_secrets,
+        resolve_profile_for_project,
+    )
+    from wren.table_scaffold import (  # noqa: PLC0415
+        default_model_name,
+        introspect_maxcompute_table,
+        model_metadata_from_table,
+        validate_model_name,
+        write_model_metadata,
+    )
+
+    try:
+        project_path = discover_project_path(path)
+    except SystemExit as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+    config = load_project_config(project_path)
+    if config.get("data_source") != "maxcompute":
+        typer.echo(
+            "Error: context add-table currently supports MaxCompute projects only.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    model_name = model or default_model_name(table)
+    try:
+        validate_model_name(model_name)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        profile_name, profile_dict = resolve_profile_for_project(project_path)
+    except SystemExit as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    if not profile_dict:
+        typer.echo(
+            "Error: no Wren profile is bound or active. "
+            "Run `wren context set-profile <name>` first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if profile_dict.get("datasource") != "maxcompute":
+        typer.echo(
+            f"Error: profile '{profile_name}' is not maxcompute "
+            f"(datasource={profile_dict.get('datasource')!r}).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        expanded_profile = expand_profile_secrets(profile_dict)
+        connection_info = DataSource.maxcompute.get_connection_info(expanded_profile)
+    except (MissingSecretError, ValidationError, ValueError) as exc:
+        typer.echo(f"Error: invalid MaxCompute profile: {exc}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        introspected = introspect_maxcompute_table(
+            connection_info,
+            table,
+            table_schema=table_schema,
+        )
+        metadata = model_metadata_from_table(
+            introspected,
+            model_name=model_name,
+            description=description,
+            table_schema=table_schema,
+            table_catalog=table_catalog,
+        )
+        if dry_run:
+            import yaml as _yaml  # noqa: PLC0415
+
+            typer.echo(_yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False))
+            return
+        out = write_model_metadata(project_path, metadata, force=force)
+    except (FileExistsError, RuntimeError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"Added model '{model_name}' from MaxCompute table '{table}' "
+        f"({len(metadata['columns'])} columns)."
+    )
+    typer.echo(f"  wrote {out.relative_to(project_path)}")
+
+    if build_after:
+        errors = validate_project(project_path)
+        hard_errors = [e for e in errors if e.level == "error"]
+        if hard_errors:
+            for e in hard_errors:
+                typer.echo(str(e), err=True)
+            typer.echo("\nBuild aborted due to validation errors.", err=True)
+            raise typer.Exit(1)
+        target = save_target(build_json(project_path), project_path)
+        typer.echo(f"  built {target.relative_to(project_path)}")
+
+
 @context_app.command()
 def init(
     path: ProjectPathOpt = None,
