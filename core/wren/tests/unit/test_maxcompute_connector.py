@@ -8,7 +8,10 @@ import pandas as pd
 import pytest
 from pydantic import SecretStr
 
-from wren.connector.maxcompute import MaxComputeConnector
+from wren.connector.maxcompute import (
+    MaxComputeConnector,
+    _apply_latest_partition_filter,
+)
 from wren.model import MaxComputeConnectionInfo
 from wren.model.error import ErrorCode, ErrorPhase, WrenError
 
@@ -164,7 +167,7 @@ def test_query_executes_with_hints_and_returns_arrow(fake_odps) -> None:
 
     conn = fake_odps.connections[-1]
     assert conn.execute_calls[-1] == {
-        "sql": "SELECT * FROM (SELECT id, name FROM orders) AS _wren_sub LIMIT 10",
+        "sql": "SELECT * FROM (SELECT id, name FROM orders WHERE orders.ds = MAX_PT('orders')) AS _wren_sub LIMIT 10",
         "hints": {
             "odps.sql.reducer.instances": "4",
             "odps.sql.allow.namespace.schema": "true",
@@ -180,6 +183,31 @@ def test_query_executes_with_hints_and_returns_arrow(fake_odps) -> None:
     assert fake_odps.options.tunnel.limit_instance_tunnel is None
     assert table.column("id").to_pylist() == [1, 2]
     assert table.column("name").to_pylist() == ["a", "b"]
+
+
+def test_latest_partition_filter_preserves_explicit_ds() -> None:
+    assert (
+        _apply_latest_partition_filter(
+            "SELECT id FROM orders o WHERE o.ds = '20260705'"
+        )
+        == "SELECT id FROM orders o WHERE o.ds = '20260705'"
+    )
+
+
+def test_latest_partition_filter_adds_each_join_table() -> None:
+    assert (
+        _apply_latest_partition_filter("SELECT * FROM a JOIN b ON a.id = b.id")
+        == "SELECT * FROM a JOIN b ON a.id = b.id WHERE a.ds = MAX_PT('a') AND b.ds = MAX_PT('b')"
+    )
+
+
+def test_latest_partition_filter_rewrites_physical_table_inside_cte_only() -> None:
+    assert (
+        _apply_latest_partition_filter(
+            "WITH c AS (SELECT * FROM orders) SELECT * FROM c"
+        )
+        == "WITH c AS (SELECT * FROM orders WHERE orders.ds = MAX_PT('orders')) SELECT * FROM c"
+    )
 
 
 def test_query_without_limit_strips_trailing_semicolon(fake_odps) -> None:
