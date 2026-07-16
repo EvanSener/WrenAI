@@ -144,6 +144,50 @@ descriptions are preserved by default while structure and partition metadata
 are refreshed. Use `--replace-descriptions` to replace curated descriptions
 with source table comments.
 
+## `wren context sync-models`
+
+Detect schema drift across every MaxCompute Model backed by
+`table_reference`. The default and `--check` modes are read-only:
+
+```bash
+wren context sync-models --check
+wren context sync-models --check --model dws_order_daily_df --json
+```
+
+`--check` exits `0` when no drift exists, `2` when drift or a breaking change
+is detected, and `1` for profile/introspection failures. SQL Models using
+`ref_sql` are skipped because their output fields require SQL planning rather
+than physical-table introspection.
+
+Apply safe drift automatically:
+
+```bash
+wren context sync-models --apply-additive
+wren context sync-models --apply-additive --watch --interval 300
+```
+
+The command reuses one PyODPS client, fetches fresh table metadata, stages all
+changed Models in a temporary project, runs complete validation and MDL build,
+then replaces the Model files and `target/mdl.json` together. Curated Model and
+column semantics, calculated columns, relationship columns, primary keys, and
+other MDL settings are preserved.
+
+| Drift | `--apply-additive` behavior |
+|---|---|
+| Added physical column | Add automatically |
+| Physical column order | Update automatically |
+| Removed physical column | Block the complete sync |
+| Changed column type | Block the complete sync |
+| Changed partition metadata | Block the complete sync |
+| Missing table / introspection error | Block the complete sync |
+
+Breaking candidates are still validated in the temporary project so the
+report can expose affected Cube metrics/dimensions and other semantic errors;
+the source project is not modified. A successful apply refreshes project-local
+semantic memory when the LanceDB backend is enabled. Use
+`--no-reindex-memory` when a separate `wren memory watch` process owns that
+lifecycle.
+
 ---
 
 ## `wren docs` — Connection Info
@@ -348,6 +392,11 @@ For aggregation queries where the MDL defines cubes, use `wren cube` instead
 of writing raw SQL. The translator produces correct `GROUP BY`, `DATE_TRUNC`,
 and `WHERE` clauses from a structured input.
 
+Reusable formulas and grouping attributes are authored once under
+`metrics/<name>/metadata.yml` and `dimensions/<name>/metadata.yml`, then
+referenced by source Cubes. `wren context build` validates each Cube's
+`base_object` fields and expands those references into runtime members.
+
 ### `wren cube list`
 
 List all cubes in the loaded MDL with their measures and dimensions.
@@ -358,12 +407,33 @@ wren cube list
 
 ### `wren cube describe <name>`
 
-Pretty-print the full cube schema as JSON: `baseObject`, measures (with
-expressions), dimensions, time dimensions, hierarchies.
+Pretty-print the full cube schema as JSON: `baseObject`, `priority`, semantic
+metadata (`label`, `description`, `synonyms`), measures, dimensions, time
+dimensions, and hierarchies.
 
 ```bash
 wren cube describe revenue
 ```
+
+### `wren cube resolve <question>`
+
+Resolve Chinese or English business language to stable cube, measure,
+dimension, and hierarchy names without calling an LLM. Use `--json` for agent
+consumption.
+
+Candidates are ranked by semantic score first. Cube `priority` only breaks an
+equal-score tie, so a high-priority general Cube cannot override an explicitly
+matched business subject.
+
+```bash
+wren cube resolve "按活动看广告销售额和点击率" --json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--limit` | Maximum candidates (default 5) |
+| `--json` | Emit structured candidates and a `suggestedQuery` |
+| `--mdl` | Path to MDL JSON (defaults to `<project>/target/mdl.json`) |
 
 ### `wren cube query`
 

@@ -1,0 +1,6 @@
+name: total_revenue
+expression: SUM(amount)
+type: DOUBLE
+label: Total revenue
+description: Sum of order revenue in the selected scope.
+synonyms: [revenue, sales]

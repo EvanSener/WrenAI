@@ -122,7 +122,7 @@
       "additionalProperties": false
     },
     "measure": {
-      "description": "A measure within a Cube — a named aggregation expression.",
+      "description": "The runtime Cube representation of a metric. Project-level metrics are expanded into this shape during context build.",
       "type": "object",
       "properties": {
         "name": {
@@ -139,6 +139,25 @@
           "description": "the data type of the measure result",
           "type": "string",
           "minLength": 1
+        },
+        "label": {
+          "description": "the human-readable display label of the measure",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "the human-readable business definition of the measure",
+          "type": "string",
+          "minLength": 1
+        },
+        "synonyms": {
+          "description": "natural-language synonyms used to discover the measure",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "required": ["name", "expression", "type"],
@@ -162,6 +181,25 @@
           "description": "the data type of the dimension",
           "type": "string",
           "minLength": 1
+        },
+        "label": {
+          "description": "the human-readable display label of the dimension",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "the human-readable business definition of the dimension",
+          "type": "string",
+          "minLength": 1
+        },
+        "synonyms": {
+          "description": "natural-language synonyms used to discover the dimension",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "required": ["name", "expression", "type"],
@@ -185,6 +223,25 @@
           "description": "the data type of the time dimension (DATE, TIMESTAMP, …)",
           "type": "string",
           "minLength": 1
+        },
+        "label": {
+          "description": "the human-readable display label of the time dimension",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "the human-readable business definition of the time dimension",
+          "type": "string",
+          "minLength": 1
+        },
+        "synonyms": {
+          "description": "natural-language synonyms used to discover the time dimension",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "required": ["name", "expression", "type"],
@@ -440,8 +497,34 @@
             "type": "string",
             "minLength": 1
           },
+          "label": {
+            "description": "the human-readable display label of the cube",
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "description": "the human-readable business definition of the cube",
+            "type": "string",
+            "minLength": 1
+          },
+          "synonyms": {
+            "description": "natural-language synonyms used to discover the cube",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "priority": {
+            "description": "deterministic Cube discovery priority used only after semantic score; higher values win equal-score conflicts",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "default": 0
+          },
           "measures": {
-            "description": "the list of measures (aggregation expressions)",
+            "description": "the compiled list of metric measures (project-level references are expanded before MDL emission)",
             "type": "array",
             "items": {
               "$ref": "#/$defs/measure"
@@ -463,15 +546,13 @@
             }
           },
           "hierarchies": {
-            "description": "drill-down paths — map of hierarchy name → ordered list of dimension or timeDimension names (coarsest to finest)",
+            "description": "drill-down paths keyed by stable hierarchy name, with ordered dimension or time-dimension names from coarse to fine.",
             "type": "object",
             "additionalProperties": {
               "type": "array",
               "minItems": 1,
-              "items": {
-                "type": "string",
-                "minLength": 1
-              }
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
             }
           }
         },

@@ -251,13 +251,24 @@ def _core_compatible_data_source(data_source: DataSource) -> str:
     return data_source.name
 
 
-def _core_compatible_manifest_str(manifest_str: str, data_source: DataSource) -> str:
+def _core_compatible_manifest_json(
+    manifest_json: str, data_source: DataSource
+) -> str:
     if data_source != DataSource.maxcompute:
-        return manifest_str
+        return manifest_json
 
-    manifest = json.loads(base64.b64decode(manifest_str))
+    manifest = json.loads(manifest_json)
     if manifest.get("dataSource") == data_source.value:
         manifest["dataSource"] = DataSource.datafusion.value
     if manifest.get("data_source") == data_source.value:
         manifest["data_source"] = DataSource.datafusion.value
-    return base64.b64encode(json.dumps(manifest).encode()).decode()
+    return json.dumps(manifest)
+
+
+def _core_compatible_manifest_str(manifest_str: str, data_source: DataSource) -> str:
+    if data_source != DataSource.maxcompute:
+        return manifest_str
+
+    manifest_json = base64.b64decode(manifest_str).decode()
+    compatible_json = _core_compatible_manifest_json(manifest_json, data_source)
+    return base64.b64encode(compatible_json.encode()).decode()

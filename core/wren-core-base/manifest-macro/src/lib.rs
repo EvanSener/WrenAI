@@ -285,6 +285,12 @@ pub fn measure(python_binding: proc_macro::TokenStream) -> proc_macro::TokenStre
             pub name: String,
             pub expression: String,
             pub r#type: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub label: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub description: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub synonyms: Vec<String>,
         }
     };
     proc_macro::TokenStream::from(expanded)
@@ -309,6 +315,12 @@ pub fn cube_dimension(python_binding: proc_macro::TokenStream) -> proc_macro::To
             pub name: String,
             pub expression: String,
             pub r#type: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub label: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub description: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub synonyms: Vec<String>,
         }
     };
     proc_macro::TokenStream::from(expanded)
@@ -333,6 +345,12 @@ pub fn time_dimension(python_binding: proc_macro::TokenStream) -> proc_macro::To
             pub name: String,
             pub expression: String,
             pub r#type: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub label: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub description: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub synonyms: Vec<String>,
         }
     };
     proc_macro::TokenStream::from(expanded)
@@ -358,6 +376,14 @@ pub fn cube(python_binding: proc_macro::TokenStream) -> proc_macro::TokenStream 
         pub struct Cube {
             pub name: String,
             pub base_object: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub label: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub description: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub synonyms: Vec<String>,
+            #[serde(default)]
+            pub priority: i32,
             #[serde(default)]
             pub measures: Vec<std::sync::Arc<Measure>>,
             #[serde(default)]
@@ -374,6 +400,10 @@ pub fn cube(python_binding: proc_macro::TokenStream) -> proc_macro::TokenStream 
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
                 self.name.hash(state);
                 self.base_object.hash(state);
+                self.label.hash(state);
+                self.description.hash(state);
+                self.synonyms.hash(state);
+                self.priority.hash(state);
                 self.measures.hash(state);
                 self.dimensions.hash(state);
                 self.time_dimensions.hash(state);

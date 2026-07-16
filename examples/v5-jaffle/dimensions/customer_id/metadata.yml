@@ -1,0 +1,6 @@
+name: customer_id
+expression: customer_id
+type: INTEGER
+label: Customer
+description: Stable customer identifier attached to each order.
+synonyms: [customer, buyer]

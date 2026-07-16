@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,10 +43,7 @@ def default_model_name(physical_table: str) -> str:
 
 def validate_model_name(name: str) -> None:
     if not _MODEL_NAME_RE.match(name):
-        raise ValueError(
-            "model name must match [A-Za-z_][A-Za-z0-9_]*; "
-            f"got {name!r}"
-        )
+        raise ValueError(f"model name must match [A-Za-z_][A-Za-z0-9_]*; got {name!r}")
 
 
 def model_metadata_from_table(
@@ -123,6 +121,29 @@ def merge_existing_semantics(
         return metadata
 
     merged = dict(metadata)
+    for key, value in existing.items():
+        if key.startswith("_") or key in {
+            "name",
+            "ref_sql",
+            "table_reference",
+            "columns",
+            "properties",
+        }:
+            continue
+        merged[key] = deepcopy(value)
+
+    existing_table_reference = existing.get("table_reference") or {}
+    generated_table_reference = metadata.get("table_reference") or {}
+    if isinstance(existing_table_reference, dict) and isinstance(
+        generated_table_reference, dict
+    ):
+        table_reference = dict(generated_table_reference)
+        for key, value in existing_table_reference.items():
+            if key not in {"table", "catalog", "schema", "description"}:
+                table_reference[key] = deepcopy(value)
+        if preserve_descriptions and existing_table_reference.get("description"):
+            table_reference["description"] = existing_table_reference["description"]
+        merged["table_reference"] = table_reference
     existing_props = existing.get("properties") or {}
     new_props = metadata.get("properties") or {}
     row_unique_names = _row_unique_identifier_names_from_model_properties(
@@ -155,8 +176,12 @@ def merge_existing_semantics(
         existing_col = existing_cols.get(col.get("name")) or {}
         existing_col_props = existing_col.get("properties") or {}
         new_col_props = col.get("properties") or {}
-        if isinstance(existing_col_props, dict):
+        if isinstance(existing_col, dict):
             col = dict(col)
+            for key, value in existing_col.items():
+                if key not in {"name", "type", "properties"}:
+                    col[key] = deepcopy(value)
+        if isinstance(existing_col_props, dict):
             col_props = _merge_properties(existing_col_props, new_col_props)
             if preserve_descriptions and existing_col_props.get("description"):
                 col_props["description"] = existing_col_props["description"]
@@ -165,8 +190,21 @@ def merge_existing_semantics(
             _drop_deprecated_column_properties(col_props)
             col["properties"] = col_props
         merged_cols.append(col)
+    generated_names = {col.get("name") for col in merged_cols if isinstance(col, dict)}
+    for name, existing_col in existing_cols.items():
+        if name not in generated_names and _is_semantic_only_column(existing_col):
+            merged_cols.append(deepcopy(existing_col))
     merged["columns"] = merged_cols
     return merged
+
+
+def _is_semantic_only_column(column: dict[str, Any]) -> bool:
+    """Return whether a column is defined by MDL rather than the source table."""
+    return bool(
+        column.get("is_calculated")
+        or column.get("isCalculated")
+        or column.get("relationship")
+    )
 
 
 def _column_description(
@@ -212,7 +250,9 @@ def _drop_deprecated_column_properties(properties: dict[str, Any]) -> None:
             properties[new_key] = old_value
 
 
-def _merge_properties(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
+def _merge_properties(
+    existing: dict[str, Any], generated: dict[str, Any]
+) -> dict[str, Any]:
     merged = dict(existing)
     for key, value in generated.items():
         if value in (None, "") and existing.get(key) not in (None, ""):
@@ -295,17 +335,8 @@ def _odps_field_type(field: Any) -> str:
     return type_str.upper() if type_str else "STRING"
 
 
-def introspect_maxcompute_table(
-    connection_info: Any,
-    table_name: str,
-    *,
-    table_schema: str | None = None,
-) -> IntrospectedTable:
-    """Read MaxCompute table metadata through PyODPS.
-
-    ``connection_info`` is intentionally typed loosely to avoid importing the
-    Pydantic model at module import time; callers pass ``MaxComputeConnectionInfo``.
-    """
+def create_maxcompute_client(connection_info: Any) -> Any:
+    """Create one reusable PyODPS client from Wren connection information."""
     try:
         from odps import ODPS  # noqa: PLC0415
     except ImportError as e:
@@ -325,23 +356,47 @@ def introspect_maxcompute_table(
     if connection_info.quota_name:
         kwargs["quota_name"] = connection_info.quota_name
 
-    odps = ODPS(
+    return ODPS(
         connection_info.access_id.get_secret_value(),
         connection_info.access_key.get_secret_value(),
         **kwargs,
     )
+
+
+def introspect_maxcompute_table(
+    connection_info: Any,
+    table_name: str,
+    *,
+    table_schema: str | None = None,
+    table_catalog: str | None = None,
+    client: Any | None = None,
+) -> IntrospectedTable:
+    """Read MaxCompute table metadata through PyODPS.
+
+    ``connection_info`` is intentionally typed loosely to avoid importing the
+    Pydantic model at module import time; callers pass ``MaxComputeConnectionInfo``.
+    """
+    odps = client or create_maxcompute_client(connection_info)
     get_table_kwargs: dict[str, Any] = {}
     effective_schema = table_schema or connection_info.schema_name
     if effective_schema:
         get_table_kwargs["schema"] = effective_schema
+    if table_catalog:
+        get_table_kwargs["project"] = table_catalog
     try:
         table = odps.get_table(table_name, **get_table_kwargs)
     except TypeError:
         table = odps.get_table(table_name)
 
+    reload_table = getattr(table, "reload", None)
+    if callable(reload_table):
+        reload_table()
+
     schema_obj = getattr(table, "table_schema", None) or getattr(table, "schema", None)
     if schema_obj is None:
-        raise RuntimeError(f"Could not read schema for MaxCompute table {table_name!r}.")
+        raise RuntimeError(
+            f"Could not read schema for MaxCompute table {table_name!r}."
+        )
 
     partition_names = {
         getattr(partition, "name", "")

@@ -1025,6 +1025,7 @@ def _make_v2_cube_project(tmp_path: Path) -> Path:
         "columns:\n"
         "  - name: o_totalprice\n    type: double\n"
         "  - name: o_orderstatus\n    type: varchar\n"
+        "  - name: o_orderdate\n    type: date\n"
     )
     return tmp_path
 
@@ -1131,15 +1132,51 @@ def test_build_json_cube_camel_case(tmp_path):
         "order_metrics",
         "name: order_metrics\n"
         "base_object: orders\n"
+        "label: 订单指标\n"
+        "description: 订单主题的统一分析指标\n"
+        "synonyms: [订单分析, 交易指标]\n"
+        "priority: 100\n"
         "measures:\n"
         "  - name: revenue\n    expression: SUM(o_totalprice)\n    type: DOUBLE\n"
+        "    label: 订单销售额\n    description: 订单总金额\n"
+        "    synonyms: [销售额, 收入]\n"
         "time_dimensions:\n"
-        "  - name: created_at\n    expression: o_orderdate\n    type: DATE\n",
+        "  - name: created_at\n    expression: o_orderdate\n    type: DATE\n"
+        "    label: 下单日期\n    description: 订单发生日期\n"
+        "    synonyms: [订单日期]\n",
     )
     result = build_json(tmp_path)
     cube = result["cubes"][0]
     assert cube["baseObject"] == "orders"
+    assert cube["label"] == "订单指标"
+    assert cube["description"] == "订单主题的统一分析指标"
+    assert cube["synonyms"] == ["订单分析", "交易指标"]
+    assert cube["priority"] == 100
+    assert cube["measures"][0]["label"] == "订单销售额"
+    assert cube["measures"][0]["synonyms"] == ["销售额", "收入"]
     assert cube["timeDimensions"][0]["name"] == "created_at"
+    assert cube["timeDimensions"][0]["label"] == "下单日期"
+
+
+def test_build_json_preserves_hierarchy_stable_name(tmp_path):
+    _make_v2_cube_project(tmp_path)
+    _write_cube(
+        tmp_path,
+        "order_metrics",
+        "name: order_metrics\n"
+        "base_object: orders\n"
+        "measures:\n"
+        "  - name: revenue\n    expression: SUM(o_totalprice)\n    type: DOUBLE\n"
+        "dimensions:\n"
+        "  - name: status\n    expression: o_orderstatus\n    type: VARCHAR\n"
+        "hierarchies:\n"
+        "  order_status_drill: [status]\n",
+    )
+
+    hierarchy = build_json(tmp_path)["cubes"][0]["hierarchies"]
+    assert "order_status_drill" in hierarchy
+    assert "orderStatusDrill" not in hierarchy
+    assert hierarchy["order_status_drill"] == ["status"]
 
 
 def test_validate_cube_unknown_base_object(tmp_path):
@@ -1163,6 +1200,22 @@ def test_validate_cube_duplicate_name(tmp_path):
     _write_cube(tmp_path, "b", body)
     errors = validate_project(tmp_path)
     assert any("duplicate cube name" in e.message for e in errors)
+
+
+def test_validate_cube_priority_range(tmp_path):
+    _make_v2_cube_project(tmp_path)
+    _write_cube(
+        tmp_path,
+        "bad_priority",
+        "name: bad_priority\n"
+        "base_object: orders\n"
+        "priority: 1001\n"
+        "measures: [{name: c, expression: 'COUNT(*)', type: BIGINT}]\n",
+    )
+
+    errors = validate_project(tmp_path)
+
+    assert any("priority must be an integer between 0 and 1000" in e.message for e in errors)
 
 
 def test_validate_cube_missing_base_object_uses_snake_case(tmp_path):
@@ -1610,6 +1663,52 @@ def test_validate_manifest_view_no_description():
     result = validate_manifest(_b64(manifest), DataSource.duckdb)
     assert result["errors"] == []
     assert any("daily_usage" in w for w in result["warnings"])
+
+
+@pytest.mark.unit
+def test_validate_manifest_cube_and_measure_descriptions():
+    cube = {
+        "name": "order_metrics",
+        "baseObject": "orders",
+        "description": "订单指标",
+        "measures": [
+            {
+                "name": "revenue",
+                "expression": "SUM(amount)",
+                "type": "DOUBLE",
+                "description": "订单销售额",
+            },
+            {"name": "count", "expression": "COUNT(*)", "type": "BIGINT"},
+        ],
+        "dimensions": [{"name": "status", "expression": "status", "type": "VARCHAR"}],
+    }
+    manifest = {**_SEM_BASE_MANIFEST, "cubes": [cube]}
+    result = validate_manifest(_b64(manifest), DataSource.duckdb)
+    text = " ".join(result["warnings"])
+    assert "revenue" not in text
+    assert "Measure 'count'" in text
+    assert "Dimension 'status'" not in text
+
+
+@pytest.mark.unit
+def test_validate_manifest_strict_cube_dimension_description():
+    cube = {
+        "name": "order_metrics",
+        "baseObject": "orders",
+        "description": "订单指标",
+        "measures": [
+            {
+                "name": "count",
+                "expression": "COUNT(*)",
+                "type": "BIGINT",
+                "description": "订单数量",
+            }
+        ],
+        "dimensions": [{"name": "status", "expression": "status", "type": "VARCHAR"}],
+    }
+    manifest = {**_SEM_BASE_MANIFEST, "cubes": [cube]}
+    result = validate_manifest(_b64(manifest), DataSource.duckdb, level="strict")
+    assert any("Dimension 'status'" in warning for warning in result["warnings"])
 
 
 @pytest.mark.unit

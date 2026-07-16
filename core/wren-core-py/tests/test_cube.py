@@ -25,11 +25,18 @@ MANIFEST = json.dumps(
             {
                 "name": "order_metrics",
                 "baseObject": "orders",
+                "label": "订单指标",
+                "description": "订单主题的统一分析指标",
+                "synonyms": ["订单分析", "交易指标"],
+                "priority": 100,
                 "measures": [
                     {
                         "name": "revenue",
                         "expression": "SUM(o_totalprice)",
                         "type": "DOUBLE",
+                        "label": "订单销售额",
+                        "description": "订单总金额",
+                        "synonyms": ["销售额", "收入"],
                     },
                     {
                         "name": "order_count",
@@ -42,13 +49,20 @@ MANIFEST = json.dumps(
                         "name": "status",
                         "expression": "o_orderstatus",
                         "type": "VARCHAR",
-                    }
+                        "label": "订单状态",
+                        "description": "订单当前状态",
+                        "synonyms": ["状态"],
+                    },
                 ],
+                "hierarchies": {"order_drill": ["status", "created_at"]},
                 "timeDimensions": [
                     {
                         "name": "created_at",
                         "expression": "o_orderdate",
                         "type": "DATE",
+                        "label": "下单日期",
+                        "description": "订单发生日期",
+                        "synonyms": ["订单日期"],
                     }
                 ],
             }

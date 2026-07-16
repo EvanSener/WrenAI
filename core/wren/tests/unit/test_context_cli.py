@@ -704,7 +704,10 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert "unique_identifier" not in metadata["properties"]
     assert "unique_identifier_columns" not in metadata["properties"]
     assert "unique_identifier_meaning" not in metadata["properties"]
-    assert metadata["properties"]["row_description"] == "一个租户在一个业务日期的一条快照。"
+    assert (
+        metadata["properties"]["row_description"]
+        == "一个租户在一个业务日期的一条快照。"
+    )
     assert "partition_columns" not in metadata["properties"]
     assert "default_partition_filter" not in metadata["properties"]
     by_name = {col["name"]: col for col in metadata["columns"]}
@@ -793,6 +796,146 @@ def test_add_table_dry_run_prints_yaml_without_writing(tmp_path, monkeypatch):
     assert not (tmp_path / "models" / "dwd_orders" / "metadata.yml").exists()
 
 
+def _write_schema_sync_model(tmp_path: Path, *, include_legacy: bool = False) -> Path:
+    model_dir = tmp_path / "models" / "dws_tenant_order_df"
+    model_dir.mkdir(parents=True)
+    columns = (
+        "columns:\n"
+        "  - name: tenant_id\n"
+        "    type: STRING\n"
+        "    properties:\n"
+        "      description: 人工维护的租户 ID。\n"
+    )
+    if include_legacy:
+        columns += (
+            "  - name: legacy_field\n"
+            "    type: STRING\n"
+            "    properties:\n"
+            "      description: 已下线字段。\n"
+        )
+    metadata_path = model_dir / "metadata.yml"
+    metadata_path.write_text(
+        "name: dws_tenant_order_df\n"
+        "properties:\n"
+        "  description: 人工维护的模型说明。\n"
+        "table_reference:\n"
+        "  table: dws_tenant_order_df\n"
+        f"{columns}",
+        encoding="utf-8",
+    )
+    return metadata_path
+
+
+def test_sync_models_check_reports_additive_drift_without_writing(
+    tmp_path, monkeypatch
+):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    metadata_path = _write_schema_sync_model(tmp_path)
+    before = metadata_path.read_text(encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "sync-models",
+            "--path",
+            str(tmp_path),
+            "--check",
+            "--no-reindex-memory",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "+ amount DECIMAL(18,2)" in result.output
+    assert "+ ds STRING" in result.output
+    assert "Check only" in result.output
+    assert metadata_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "target" / "mdl.json").exists()
+
+
+def test_sync_models_applies_additions_and_builds_atomically(tmp_path, monkeypatch):
+    calls = _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    metadata_path = _write_schema_sync_model(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "sync-models",
+            "--path",
+            str(tmp_path),
+            "--apply-additive",
+            "--no-reindex-memory",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Applied 1 model(s)" in result.output
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    assert [column["name"] for column in metadata["columns"]] == [
+        "tenant_id",
+        "amount",
+        "ds",
+    ]
+    assert metadata["properties"]["description"] == "人工维护的模型说明。"
+    assert (tmp_path / "target" / "mdl.json").exists()
+    assert sum("init" in call for call in calls) == 1
+
+
+def test_sync_models_breaking_drift_blocks_entire_apply(tmp_path, monkeypatch):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    metadata_path = _write_schema_sync_model(tmp_path, include_legacy=True)
+    before = metadata_path.read_text(encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "sync-models",
+            "--path",
+            str(tmp_path),
+            "--apply-additive",
+            "--no-reindex-memory",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "legacy_field STRING [BREAKING]" in result.output
+    assert "no files were written" in result.output
+    assert metadata_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "target" / "mdl.json").exists()
+
+
+def test_sync_models_watch_can_apply_one_poll(tmp_path, monkeypatch):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    _write_schema_sync_model(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "sync-models",
+            "--path",
+            str(tmp_path),
+            "--apply-additive",
+            "--watch",
+            "--interval",
+            "1",
+            "--max-polls",
+            "1",
+            "--no-reindex-memory",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Applied 1 model(s)" in result.output
+    assert "Polled 1 time(s): 1 applied" in result.output
+
+
 def test_add_table_requires_maxcompute_project(tmp_path):
     _make_valid_project(tmp_path)
 
@@ -810,10 +953,25 @@ def test_add_table_requires_maxcompute_project(tmp_path):
 
 def test_show_summary(tmp_path):
     _make_valid_project(tmp_path)
+    cube_dir = tmp_path / "cubes" / "order_metrics"
+    cube_dir.mkdir(parents=True)
+    (cube_dir / "metadata.yml").write_text(
+        "name: order_metrics\n"
+        "base_object: orders\n"
+        "label: 订单指标\n"
+        "priority: 100\n"
+        "measures:\n"
+        "  - name: order_count\n"
+        "    expression: COUNT(*)\n"
+        "    type: BIGINT\n"
+    )
     result = runner.invoke(app, ["context", "show", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "test_proj" in result.output
     assert "orders" in result.output
+    assert "Cubes (1)" in result.output
+    assert "order_metrics — 订单指标" in result.output
+    assert "priority=100" in result.output
 
 
 def test_show_json(tmp_path):

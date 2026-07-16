@@ -116,6 +116,48 @@ def test_cube_describe_unknown(tmp_path):
     assert "not found" in result.output
 
 
+def test_cube_resolve_chinese_terms_to_stable_names(tmp_path):
+    mdl = _make_mdl(tmp_path)
+    manifest = json.loads(mdl.read_text())
+    cube = manifest["cubes"][0]
+    cube.update(
+        {
+            "label": "订单指标",
+            "synonyms": ["交易分析"],
+            "hierarchies": {"order_drill": ["status", "order_date"]},
+        }
+    )
+    cube["measures"][0].update(
+        {
+            "label": "订单销售额",
+            "synonyms": ["收入"],
+        }
+    )
+    cube["dimensions"][0]["label"] = "订单状态"
+    mdl.write_text(json.dumps(manifest))
+
+    result = runner.invoke(
+        app,
+        [
+            "cube",
+            "resolve",
+            "按订单状态看销售额",
+            "--json",
+            "--mdl",
+            str(mdl),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    resolved = json.loads(result.output)
+    assert resolved["matches"][0]["cube"] == "order_metrics"
+    assert resolved["matches"][0]["suggestedQuery"] == {
+        "cube": "order_metrics",
+        "measures": ["revenue"],
+        "dimensions": ["status"],
+    }
+
+
 # ── query --sql-only ────────────────────────────────────────────────────────
 
 
@@ -142,6 +184,34 @@ def test_cube_query_sql_only(tmp_path):
     assert "o_orderstatus AS status" in result.output
     assert "FROM orders" in result.output
     assert "GROUP BY" in result.output
+
+
+def test_cube_query_sql_only_accepts_maxcompute_manifest(tmp_path):
+    mdl = _make_mdl(tmp_path)
+    manifest = json.loads(mdl.read_text())
+    manifest["dataSource"] = "maxcompute"
+    mdl.write_text(json.dumps(manifest))
+
+    result = runner.invoke(
+        app,
+        [
+            "cube",
+            "query",
+            "--cube",
+            "order_metrics",
+            "--measures",
+            "revenue",
+            "--dimensions",
+            "status",
+            "--sql-only",
+            "--mdl",
+            str(mdl),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "SUM(o_totalprice) AS revenue" in result.output
+    assert "GROUP BY 1" in result.output
 
 
 def test_cube_query_sql_only_time_dimension(tmp_path):

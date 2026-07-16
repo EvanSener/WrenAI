@@ -10,7 +10,7 @@ import typer
 
 context_app = typer.Typer(
     name="context",
-    help="Manage MDL context — models, views, relationships, and instructions.",
+    help="Manage MDL context — models, views, global metrics/dimensions, cubes, relationships, and rules.",
 )
 
 
@@ -293,6 +293,7 @@ def add_table(
             connection_info,
             table,
             table_schema=table_schema,
+            table_catalog=table_catalog,
         )
         metadata = model_metadata_from_table(
             introspected,
@@ -301,9 +302,7 @@ def add_table(
             table_schema=table_schema,
             table_catalog=table_catalog,
         )
-        existing_metadata_path = (
-            project_path / "models" / model_name / "metadata.yml"
-        )
+        existing_metadata_path = project_path / "models" / model_name / "metadata.yml"
         if force and existing_metadata_path.exists() and not replace_descriptions:
             import yaml as _yaml  # noqa: PLC0415
 
@@ -337,6 +336,304 @@ def add_table(
             raise typer.Exit(1)
         target = save_target(build_json(project_path), project_path)
         typer.echo(f"  built {target.relative_to(project_path)}")
+
+
+@context_app.command("sync-models")
+def sync_models(
+    path: ProjectPathOpt = None,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Detect and validate schema drift without writing files (default).",
+        ),
+    ] = False,
+    apply_additive: Annotated[
+        bool,
+        typer.Option(
+            "--apply-additive",
+            help=(
+                "Apply only when every detected change is non-breaking. "
+                "Any removed/type/partition-changed field blocks the whole sync."
+            ),
+        ),
+    ] = False,
+    models: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--model",
+            "-m",
+            help="Limit sync to one or more model names. Repeat the option.",
+        ),
+    ] = None,
+    watch: Annotated[
+        bool,
+        typer.Option(
+            "--watch",
+            help="Continuously poll live schemas. Requires --apply-additive.",
+        ),
+    ] = False,
+    interval: Annotated[
+        float,
+        typer.Option(
+            "--interval",
+            "-i",
+            min=1.0,
+            help="Seconds between watch polls (minimum 1).",
+        ),
+    ] = 300.0,
+    max_polls: Annotated[
+        Optional[int],
+        typer.Option(
+            "--max-polls",
+            min=1,
+            help="Stop watch mode after N polls (mainly for automation/testing).",
+        ),
+    ] = None,
+    reindex_memory: Annotated[
+        bool,
+        typer.Option(
+            "--reindex-memory/--no-reindex-memory",
+            help="Refresh project-local semantic memory after a successful apply.",
+        ),
+    ] = True,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Synchronize table-backed Models with live MaxCompute schemas.
+
+    The command stages every changed Model in a temporary project, validates
+    the complete semantic graph, compiles a candidate MDL, and only then
+    replaces model files plus ``target/mdl.json``. SQL/ref_sql Models are
+    skipped because their output schema requires SQL planning rather than
+    physical-table introspection.
+    """
+    if check and apply_additive:
+        typer.echo(
+            "Error: --check and --apply-additive are mutually exclusive.", err=True
+        )
+        raise typer.Exit(1)
+    if watch and not apply_additive:
+        typer.echo("Error: --watch requires --apply-additive.", err=True)
+        raise typer.Exit(1)
+
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from wren.context import (  # noqa: PLC0415
+        discover_project_path,
+        load_project_config,
+    )
+    from wren.model.data_source import DataSource  # noqa: PLC0415
+    from wren.profile import (  # noqa: PLC0415
+        MissingSecretError,
+        expand_profile_secrets,
+        resolve_profile_for_project,
+    )
+    from wren.schema_sync import (  # noqa: PLC0415
+        SchemaSyncExecution,
+        execute_schema_sync,
+        watch_schema_sync,
+    )
+    from wren.table_scaffold import (  # noqa: PLC0415
+        create_maxcompute_client,
+        introspect_maxcompute_table,
+    )
+
+    try:
+        project_path = discover_project_path(path)
+    except SystemExit as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    config = load_project_config(project_path)
+    if config.get("data_source") != "maxcompute":
+        typer.echo(
+            "Error: context sync-models currently supports MaxCompute projects only.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        profile_name, profile_dict = resolve_profile_for_project(project_path)
+    except SystemExit as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    if not profile_dict:
+        typer.echo(
+            "Error: no Wren profile is bound or active. "
+            "Run `wren context set-profile <name>` first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if profile_dict.get("datasource") != "maxcompute":
+        typer.echo(
+            f"Error: profile '{profile_name}' is not maxcompute "
+            f"(datasource={profile_dict.get('datasource')!r}).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        expanded_profile = expand_profile_secrets(profile_dict)
+        connection_info = DataSource.maxcompute.get_connection_info(expanded_profile)
+        client = create_maxcompute_client(connection_info)
+    except (MissingSecretError, ValidationError, RuntimeError, ValueError) as exc:
+        typer.echo(f"Error: invalid MaxCompute profile: {exc}", err=True)
+        raise typer.Exit(1)
+
+    selected_models = set(models or []) or None
+
+    def _introspect(
+        table_name: str,
+        *,
+        table_schema: str | None = None,
+        table_catalog: str | None = None,
+    ):
+        return introspect_maxcompute_table(
+            connection_info,
+            table_name,
+            table_schema=table_schema,
+            table_catalog=table_catalog,
+            client=client,
+        )
+
+    def _sync_once() -> SchemaSyncExecution:
+        return execute_schema_sync(
+            project_path,
+            _introspect,
+            apply_additive=apply_additive,
+            selected_models=selected_models,
+            reindex_memory=reindex_memory,
+        )
+
+    def _render(result: SchemaSyncExecution) -> None:
+        if output_json:
+            typer.echo(json.dumps(result.to_dict(), ensure_ascii=False))
+            return
+        _print_schema_sync_result(result)
+
+    if watch:
+        if not output_json:
+            typer.echo(
+                f"Watching {project_path} every {interval:g}s for MaxCompute "
+                "schema drift. Ctrl+C to stop.",
+                err=True,
+            )
+
+        def _on_error(exc: Exception) -> None:
+            if output_json:
+                typer.echo(
+                    json.dumps(
+                        {"event": "syncError", "message": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                typer.echo(f"Schema sync failed; will retry: {exc}", err=True)
+
+        state = watch_schema_sync(
+            _sync_once,
+            interval=interval,
+            max_polls=max_polls,
+            on_result=_render,
+            on_error=_on_error,
+        )
+        if max_polls is not None:
+            summary = {
+                "event": "watchSummary",
+                "polls": state.polls,
+                "applied": state.applied,
+                "blocked": state.blocked,
+                "errors": state.errors,
+            }
+            if output_json:
+                typer.echo(json.dumps(summary, ensure_ascii=False))
+            else:
+                typer.echo(
+                    f"Polled {state.polls} time(s): {state.applied} applied, "
+                    f"{state.blocked} blocked, {state.errors} error(s).",
+                    err=True,
+                )
+        return
+
+    result = _sync_once()
+    _render(result)
+    if result.plan.issues or result.memory_error:
+        raise typer.Exit(1)
+    if result.blocked or (not apply_additive and result.plan.has_drift):
+        raise typer.Exit(2)
+
+
+def _print_schema_sync_result(result) -> None:
+    plan = result.plan
+    typer.echo(
+        f"Schema sync: {len(plan.models)} table-backed model(s) scanned, "
+        f"{len(plan.skipped)} skipped."
+    )
+    if plan.skipped:
+        for skipped in plan.skipped:
+            typer.echo(f"  skipped {skipped.model}: {skipped.reason}")
+    if plan.issues:
+        typer.echo("Introspection errors:", err=True)
+        for issue in plan.issues:
+            table = f" ({issue.table})" if issue.table else ""
+            typer.echo(f"  {issue.model}{table}: {issue.message}", err=True)
+
+    if not plan.has_drift:
+        typer.echo("No schema drift detected.")
+        return
+
+    for model in plan.changed_models:
+        typer.echo(f"\n{model.model_name} ← {model.table_name}")
+        for change in model.changes:
+            typer.echo(f"  {_format_schema_change(change)}")
+
+    if result.candidate and result.candidate.errors:
+        typer.echo("\nCandidate project validation failed:", err=True)
+        for error in result.candidate.errors:
+            typer.echo(f"  {error}", err=True)
+    if plan.breaking_changes:
+        typer.echo(
+            f"\nBlocked: {len(plan.breaking_changes)} breaking change(s); "
+            "no files were written.",
+            err=True,
+        )
+    elif result.applied:
+        typer.echo(
+            f"\nApplied {len(plan.changed_models)} model(s) and rebuilt target/mdl.json."
+        )
+        if result.memory_result:
+            typer.echo(
+                f"Reindexed {result.memory_result.get('schema_items', 0)} "
+                "memory schema item(s)."
+            )
+    else:
+        typer.echo("\nCheck only — no files were written.")
+    if result.memory_error:
+        typer.echo(
+            f"Warning: models were applied but memory reindex failed: "
+            f"{result.memory_error}",
+            err=True,
+        )
+
+
+def _format_schema_change(change) -> str:
+    breaking = " [BREAKING]" if change.breaking else ""
+    if change.kind == "column_added":
+        return f"+ {change.column} {change.after}"
+    if change.kind == "column_removed":
+        return f"- {change.column} {change.before}{breaking}"
+    if change.kind == "column_type_changed":
+        return f"~ {change.column}: {change.before} → {change.after}{breaking}"
+    if change.kind == "partition_changed":
+        return f"~ {change.column}: partition metadata changed{breaking}"
+    if change.kind == "column_order_changed":
+        return "~ physical column order changed"
+    if change.kind == "table_comment_changed":
+        return "~ source table comment changed"
+    return f"~ {change.kind}{breaking}"
 
 
 @context_app.command()
@@ -457,6 +754,8 @@ def init(
     # Create directory structure
     (project_path / "models").mkdir(parents=True, exist_ok=True)
     (project_path / "views").mkdir(parents=True, exist_ok=True)
+    (project_path / "metrics").mkdir(parents=True, exist_ok=True)
+    (project_path / "dimensions").mkdir(parents=True, exist_ok=True)
     (project_path / "cubes").mkdir(parents=True, exist_ok=True)
 
     # wren_project.yml
@@ -561,6 +860,9 @@ def init(
     else:
         typer.echo("  models/                     — (empty; add your own models)")
         typer.echo("  views/                      — (empty; add your own views)")
+    typer.echo("  metrics/                    — global metric definitions")
+    typer.echo("  dimensions/                 — global semantic dimensions")
+    typer.echo("  cubes/                      — metric refs + available dimensions")
     typer.echo("  relationships.yml           — define joins between models")
     typer.echo(
         "  knowledge/rules/            — business rules for LLM query generation"
@@ -641,6 +943,9 @@ def validate(
     from wren.context import (  # noqa: PLC0415
         build_json,
         discover_project_path,
+        load_cubes,
+        load_dimensions,
+        load_metrics,
         load_models,
         load_project_config,
         load_relationships,
@@ -740,9 +1045,15 @@ def validate(
     if not struct_errors and not sem_errors and not sem_warnings:
         models = load_models(project_path)
         views = load_views(project_path)
+        cubes = load_cubes(project_path)
+        dimensions = load_dimensions(project_path)
+        metrics = load_metrics(project_path)
         rels = load_relationships(project_path)
         typer.echo(
-            f"Valid — {len(models)} models, {len(views)} views, {len(rels)} relationships."
+            f"Valid — {len(models)} models, {len(views)} views, "
+            f"{len(metrics)} global metrics, {len(dimensions)} global dimensions, "
+            f"{len(cubes)} cubes, "
+            f"{len(rels)} relationships."
         )
 
 
@@ -802,7 +1113,9 @@ def build(
     """Build into target/mdl.json for the engine.
 
     Default mode: reads wren_project.yml, models/*/metadata.yml (+ref_sql.sql),
-    views/*/metadata.yml (+sql.yml), relationships.yml, and knowledge/.
+    views/*/metadata.yml (+sql.yml), metrics/*/metadata.yml,
+    dimensions/*/metadata.yml, cubes/*/metadata.yml, relationships.yml,
+    and knowledge/.
 
     With --from-osi: reads an Open Semantic Interchange YAML file and emits
     MDL JSON directly. The OSI file stays as the single source of truth; no
@@ -821,9 +1134,13 @@ def build(
     from wren.context import (  # noqa: PLC0415
         build_json,
         discover_project_path,
+        load_dimensions,
+        load_metrics,
         save_target,
         validate_project,
     )
+    from wren.dimension_compiler import DimensionCompilationError  # noqa: PLC0415
+    from wren.metric_compiler import MetricCompilationError  # noqa: PLC0415
 
     try:
         project_path = discover_project_path(path)
@@ -840,7 +1157,11 @@ def build(
             typer.echo("\nBuild aborted due to validation errors.", err=True)
             raise typer.Exit(1)
 
-    manifest_json = build_json(project_path)
+    try:
+        manifest_json = build_json(project_path)
+    except (MetricCompilationError, DimensionCompilationError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
 
     if output:
         out_path = Path(output).expanduser()
@@ -851,7 +1172,13 @@ def build(
 
     n_models = len(manifest_json.get("models", []))
     n_views = len(manifest_json.get("views", []))
-    typer.echo(f"Built: {n_models} models, {n_views} views → {out_path}")
+    n_cubes = len(manifest_json.get("cubes", []))
+    n_metrics = len(load_metrics(project_path))
+    n_dimensions = len(load_dimensions(project_path))
+    typer.echo(
+        f"Built: {n_models} models, {n_views} views, {n_metrics} global metrics, "
+        f"{n_dimensions} global dimensions, {n_cubes} cubes → {out_path}"
+    )
     typer.echo("")
     typer.echo("Next: wren --sql 'SELECT ...' to query your data.")
     # Soft nudge toward semantic memory once the schema crosses the threshold
@@ -875,7 +1202,7 @@ def show(
         typer.Option("--output", "-o", help="Output format: json|yaml|summary"),
     ] = "summary",
 ) -> None:
-    """Show the current project context (models, views, relationships).
+    """Show the current project context (models, views, metrics, dimensions, cubes, relationships).
 
     With --from-osi: show what the OSI file would produce. Requires --data-source.
     """
@@ -894,6 +1221,8 @@ def show(
         build_json,
         build_manifest,
         discover_project_path,
+        load_dimensions,
+        load_metrics,
         load_project_config,
         load_rules,
     )
@@ -922,6 +1251,9 @@ def show(
         manifest = build_manifest(project_path)
         models = manifest.get("models", [])
         views = manifest.get("views", [])
+        cubes = manifest.get("cubes", [])
+        dimensions = load_dimensions(project_path)
+        metrics = load_metrics(project_path)
         rels = manifest.get("relationships", [])
         instr_content, used_legacy_instructions = load_rules(project_path)
 
@@ -944,6 +1276,43 @@ def show(
             for v in views:
                 typer.echo(f"  {v['name']}")
 
+        if metrics:
+            typer.echo(f"\nGlobal metrics ({len(metrics)}):")
+            for metric in metrics:
+                name = metric.get("name", "<unnamed>")
+                label = metric.get("label")
+                typer.echo(f"  {name}" + (f" — {label}" if label else ""))
+
+        if dimensions:
+            typer.echo(f"\nGlobal dimensions ({len(dimensions)}):")
+            for dimension in dimensions:
+                name = dimension.get("name", "<unnamed>")
+                label = dimension.get("label")
+                typer.echo(f"  {name}" + (f" — {label}" if label else ""))
+
+        if cubes:
+            typer.echo(f"\nCubes ({len(cubes)}):")
+            for cube in cubes:
+                name = cube.get("name", "<unnamed>")
+                label = cube.get("label")
+                heading = f"  {name}"
+                if label:
+                    heading += f" — {label}"
+                base = cube.get("base_object", "?")
+                priority = cube.get("priority", 0)
+                measures = len(cube.get("measures") or [])
+                dimension_count = len(cube.get("dimensions") or []) + len(
+                    cube.get("time_dimensions") or []
+                )
+                hierarchy_names = ", ".join((cube.get("hierarchies") or {}).keys())
+                detail = (
+                    f"base={base}, priority={priority}, {measures} measures, "
+                    f"{dimension_count} dimensions"
+                )
+                if hierarchy_names:
+                    detail += f", hierarchies={hierarchy_names}"
+                typer.echo(f"{heading}  ({detail})")
+
         if rels:
             typer.echo(f"\nRelationships ({len(rels)}):")
             for r in rels:
@@ -959,7 +1328,7 @@ def show(
                 "  (instructions.md is deprecated — move it into knowledge/rules/*.md)"
             )
 
-        if not models and not views:
+        if not models and not views and not metrics and not dimensions and not cubes:
             typer.echo("Empty project. Run `wren context init` to get started.")
 
 

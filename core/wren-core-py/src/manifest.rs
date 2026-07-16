@@ -97,20 +97,33 @@ mod tests {
             cubes: vec![Arc::from(Cube {
                 name: "order_cube".to_string(),
                 base_object: "model_1".to_string(),
+                label: Some("订单指标".to_string()),
+                description: Some("订单主题的统一分析指标".to_string()),
+                synonyms: vec!["订单分析".to_string(), "交易指标".to_string()],
+                priority: 100,
                 measures: vec![Arc::from(Measure {
                     name: "total_price".to_string(),
                     expression: "sum(price)".to_string(),
                     r#type: "float".to_string(),
+                    label: Some("订单销售额".to_string()),
+                    description: Some("订单总金额".to_string()),
+                    synonyms: vec!["销售额".to_string(), "收入".to_string()],
                 })],
                 dimensions: vec![Arc::from(CubeDimension {
                     name: "status".to_string(),
                     expression: "status".to_string(),
                     r#type: "string".to_string(),
+                    label: Some("订单状态".to_string()),
+                    description: Some("订单当前状态".to_string()),
+                    synonyms: vec!["状态".to_string()],
                 })],
                 time_dimensions: vec![Arc::from(TimeDimension {
                     name: "order_date".to_string(),
                     expression: "order_date".to_string(),
                     r#type: "date".to_string(),
+                    label: Some("下单日期".to_string()),
+                    description: Some("订单发生日期".to_string()),
+                    synonyms: vec!["订单日期".to_string()],
                 })],
                 hierarchies: BTreeMap::new(),
             })],
@@ -126,11 +139,21 @@ mod tests {
             Some("SELECT * FROM table".to_string())
         );
         assert_eq!(manifest.models[1].name(), "model_2");
-        assert_eq!(manifest.models[1].table_reference(), Some("catalog.schema.table"));
+        assert_eq!(
+            manifest.models[1].table_reference(),
+            Some("catalog.schema.table")
+        );
         assert_eq!(manifest.data_source, Some(BigQuery));
         assert_eq!(manifest.cubes.len(), 1);
         assert_eq!(manifest.cubes[0].name, "order_cube");
+        assert_eq!(manifest.cubes[0].label.as_deref(), Some("订单指标"));
+        assert_eq!(manifest.cubes[0].synonyms, vec!["订单分析", "交易指标"]);
+        assert_eq!(manifest.cubes[0].priority, 100);
         assert_eq!(manifest.cubes[0].measures.len(), 1);
+        assert_eq!(
+            manifest.cubes[0].measures[0].label.as_deref(),
+            Some("订单销售额")
+        );
         assert_eq!(manifest.cubes[0].dimensions.len(), 1);
         assert_eq!(manifest.cubes[0].time_dimensions.len(), 1);
     }

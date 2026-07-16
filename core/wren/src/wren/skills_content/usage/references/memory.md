@@ -28,15 +28,15 @@ wren memory fetch -q "revenue" --threshold 50000   # raise for larger context wi
 When the MDL defines cubes, `wren memory index` emits these additional schema items:
 
 - `cube:<cube_name>` — cube overview (base object, measure list, dimension list)
-- `measure:<cube>.<measure_name>` — each measure (with expression and type)
-- `cube_dimension:<cube>.<dimension_name>` — each dimension
-- `time_dimension:<cube>.<time_dim_name>` — each time dimension
+- `measure:<cube>.<measure_name>` — each measure (with label, description,
+  synonyms, expression, and type)
+- `cube_dimension:<cube>.<dimension_name>` — each dimension with semantic metadata
+- `time_dimension:<cube>.<time_dim_name>` — each time dimension with semantic metadata
 
-These items are reachable via `wren memory fetch "<question>"`. For aggregation
-questions like "revenue by month", cube schema items typically rank higher than
-model columns because they match the aggregation intent more directly — then
-the agent should follow up with `wren cube describe <cube>` and `wren cube query`
-rather than hand-writing `GROUP BY` SQL.
+These items are reachable via `wren memory fetch -q "<question>"`. On a large
+schema, filter directly with `--type measure --model <cube_name>` when needed.
+For natural-language Cube routing, use `wren cube resolve "<question>" --json`;
+it is deterministic and does not depend on embedding rank.
 
 `wren memory describe` also adds a cube section that lists each cube's measures,
 dimensions, time dimensions, and hierarchies in markdown.

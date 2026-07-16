@@ -101,6 +101,26 @@ mod manifest_python_impl {
         }
 
         #[getter]
+        fn label(&self) -> PyResult<Option<String>> {
+            Ok(self.label.clone())
+        }
+
+        #[getter]
+        fn description(&self) -> PyResult<Option<String>> {
+            Ok(self.description.clone())
+        }
+
+        #[getter]
+        fn synonyms(&self) -> PyResult<Vec<String>> {
+            Ok(self.synonyms.clone())
+        }
+
+        #[getter]
+        fn priority(&self) -> PyResult<i32> {
+            Ok(self.priority)
+        }
+
+        #[getter]
         fn measures(&self) -> PyResult<Vec<Measure>> {
             Ok(self
                 .measures
@@ -149,6 +169,21 @@ mod manifest_python_impl {
         fn r#type(&self) -> PyResult<String> {
             Ok(self.r#type.clone())
         }
+
+        #[getter]
+        fn label(&self) -> PyResult<Option<String>> {
+            Ok(self.label.clone())
+        }
+
+        #[getter]
+        fn description(&self) -> PyResult<Option<String>> {
+            Ok(self.description.clone())
+        }
+
+        #[getter]
+        fn synonyms(&self) -> PyResult<Vec<String>> {
+            Ok(self.synonyms.clone())
+        }
     }
 
     #[pymethods]
@@ -167,6 +202,21 @@ mod manifest_python_impl {
         fn r#type(&self) -> PyResult<String> {
             Ok(self.r#type.clone())
         }
+
+        #[getter]
+        fn label(&self) -> PyResult<Option<String>> {
+            Ok(self.label.clone())
+        }
+
+        #[getter]
+        fn description(&self) -> PyResult<Option<String>> {
+            Ok(self.description.clone())
+        }
+
+        #[getter]
+        fn synonyms(&self) -> PyResult<Vec<String>> {
+            Ok(self.synonyms.clone())
+        }
     }
 
     #[pymethods]
@@ -184,6 +234,21 @@ mod manifest_python_impl {
         #[getter]
         fn r#type(&self) -> PyResult<String> {
             Ok(self.r#type.clone())
+        }
+
+        #[getter]
+        fn label(&self) -> PyResult<Option<String>> {
+            Ok(self.label.clone())
+        }
+
+        #[getter]
+        fn description(&self) -> PyResult<Option<String>> {
+            Ok(self.description.clone())
+        }
+
+        #[getter]
+        fn synonyms(&self) -> PyResult<Vec<String>> {
+            Ok(self.synonyms.clone())
         }
     }
 

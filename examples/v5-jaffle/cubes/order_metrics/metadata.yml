@@ -1,15 +1,9 @@
 name: order_metrics
 base_object: orders
+description: Pre-aggregated order revenue and counts per customer.
+priority: 100
 measures:
-  - name: total_revenue
-    expression: SUM(amount)
-    type: DOUBLE
-  - name: order_count
-    expression: COUNT(*)
-    type: BIGINT
+  - total_revenue
+  - order_count
 dimensions:
-  - name: customer_id
-    expression: customer_id
-    type: INTEGER
-properties:
-  description: Pre-aggregated order revenue and counts per customer.
+  - customer_id

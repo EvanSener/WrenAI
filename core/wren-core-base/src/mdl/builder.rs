@@ -366,8 +366,26 @@ impl MeasureBuilder {
                 name: name.to_string(),
                 expression: expression.to_string(),
                 r#type: r#type.to_string(),
+                label: None,
+                description: None,
+                synonyms: vec![],
             },
         }
+    }
+
+    pub fn label(mut self, label: &str) -> Self {
+        self.measure.label = Some(label.to_string());
+        self
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.measure.description = Some(description.to_string());
+        self
+    }
+
+    pub fn synonyms(mut self, synonyms: Vec<&str>) -> Self {
+        self.measure.synonyms = synonyms.into_iter().map(str::to_string).collect();
+        self
     }
 
     pub fn build(self) -> Arc<Measure> {
@@ -386,8 +404,26 @@ impl CubeDimensionBuilder {
                 name: name.to_string(),
                 expression: expression.to_string(),
                 r#type: r#type.to_string(),
+                label: None,
+                description: None,
+                synonyms: vec![],
             },
         }
+    }
+
+    pub fn label(mut self, label: &str) -> Self {
+        self.dimension.label = Some(label.to_string());
+        self
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.dimension.description = Some(description.to_string());
+        self
+    }
+
+    pub fn synonyms(mut self, synonyms: Vec<&str>) -> Self {
+        self.dimension.synonyms = synonyms.into_iter().map(str::to_string).collect();
+        self
     }
 
     pub fn build(self) -> Arc<CubeDimension> {
@@ -406,8 +442,26 @@ impl TimeDimensionBuilder {
                 name: name.to_string(),
                 expression: expression.to_string(),
                 r#type: r#type.to_string(),
+                label: None,
+                description: None,
+                synonyms: vec![],
             },
         }
+    }
+
+    pub fn label(mut self, label: &str) -> Self {
+        self.time_dimension.label = Some(label.to_string());
+        self
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.time_dimension.description = Some(description.to_string());
+        self
+    }
+
+    pub fn synonyms(mut self, synonyms: Vec<&str>) -> Self {
+        self.time_dimension.synonyms = synonyms.into_iter().map(str::to_string).collect();
+        self
     }
 
     pub fn build(self) -> Arc<TimeDimension> {
@@ -425,12 +479,36 @@ impl CubeBuilder {
             cube: Cube {
                 name: name.to_string(),
                 base_object: base_object.to_string(),
+                label: None,
+                description: None,
+                synonyms: vec![],
+                priority: 0,
                 measures: vec![],
                 dimensions: vec![],
                 time_dimensions: vec![],
                 hierarchies: BTreeMap::new(),
             },
         }
+    }
+
+    pub fn label(mut self, label: &str) -> Self {
+        self.cube.label = Some(label.to_string());
+        self
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.cube.description = Some(description.to_string());
+        self
+    }
+
+    pub fn synonyms(mut self, synonyms: Vec<&str>) -> Self {
+        self.cube.synonyms = synonyms.into_iter().map(str::to_string).collect();
+        self
+    }
+
+    pub fn priority(mut self, priority: i32) -> Self {
+        self.cube.priority = priority;
+        self
     }
 
     pub fn measure(mut self, measure: Arc<Measure>) -> Self {
@@ -666,6 +744,101 @@ mod test {
         let json_str = serde_json::to_string(&expected).unwrap();
         let actual: Arc<Measure> = serde_json::from_str(&json_str).unwrap();
         assert_eq!(actual, expected)
+    }
+
+    #[test]
+    fn test_cube_semantic_metadata_roundtrip() {
+        let measure_json = r#"{
+            "name":"total_price",
+            "expression":"sum(price)",
+            "type":"float",
+            "label":"订单销售额",
+            "description":"订单总金额",
+            "synonyms":["销售额","收入"]
+        }"#;
+        let measure: Arc<Measure> = serde_json::from_str(measure_json).unwrap();
+        let measure_value = serde_json::to_value(&measure).unwrap();
+        assert_eq!(measure_value["label"], "订单销售额");
+        assert_eq!(measure_value["description"], "订单总金额");
+        assert_eq!(
+            measure_value["synonyms"],
+            serde_json::json!(["销售额", "收入"])
+        );
+        let dimension_json = r#"{
+            "name":"status",
+            "expression":"status",
+            "type":"string",
+            "label":"订单状态",
+            "description":"订单状态",
+            "synonyms":["状态"]
+        }"#;
+        let dimension: Arc<CubeDimension> = serde_json::from_str(dimension_json).unwrap();
+        let dimension_value = serde_json::to_value(&dimension).unwrap();
+        assert_eq!(dimension_value["label"], "订单状态");
+        assert_eq!(dimension_value["description"], "订单状态");
+        assert_eq!(dimension_value["synonyms"], serde_json::json!(["状态"]));
+
+        let time_dimension_json = r#"{
+            "name":"order_date",
+            "expression":"order_date",
+            "type":"date",
+            "label":"下单日期",
+            "description":"下单日期",
+            "synonyms":["订单日期"]
+        }"#;
+        let time_dimension: Arc<TimeDimension> = serde_json::from_str(time_dimension_json).unwrap();
+        let time_dimension_value = serde_json::to_value(&time_dimension).unwrap();
+        assert_eq!(time_dimension_value["label"], "下单日期");
+        assert_eq!(time_dimension_value["description"], "下单日期");
+        assert_eq!(
+            time_dimension_value["synonyms"],
+            serde_json::json!(["订单日期"])
+        );
+    }
+
+    #[test]
+    fn test_cube_metadata_roundtrip() {
+        let cube_json = r#"{
+            "name":"order_metrics",
+            "baseObject":"orders",
+            "measures":[{"name":"count","expression":"count(*)","type":"bigint"}],
+            "label":"订单指标",
+            "description":"订单主题的统一分析指标",
+            "synonyms":["订单分析","交易指标"],
+            "priority":100,
+            "hierarchies":{"order_drill":["status"]}
+        }"#;
+        let cube: Arc<Cube> = serde_json::from_str(cube_json).unwrap();
+        let cube_value = serde_json::to_value(&cube).unwrap();
+        assert_eq!(cube_value["label"], "订单指标");
+        assert_eq!(cube_value["description"], "订单主题的统一分析指标");
+        assert_eq!(
+            cube_value["synonyms"],
+            serde_json::json!(["订单分析", "交易指标"])
+        );
+        assert_eq!(cube_value["priority"], 100);
+        assert_eq!(
+            cube_value["hierarchies"]["order_drill"],
+            serde_json::json!(["status"])
+        );
+    }
+
+    #[test]
+    fn test_cube_member_builders_accept_semantic_metadata() {
+        let measure = MeasureBuilder::new("total_price", "sum(price)", "float")
+            .label("订单销售额")
+            .description("订单总金额")
+            .synonyms(vec!["销售额", "收入"])
+            .build();
+        let value = serde_json::to_value(measure).unwrap();
+        assert_eq!(value["label"], "订单销售额");
+        assert_eq!(value["description"], "订单总金额");
+        assert_eq!(value["synonyms"], serde_json::json!(["销售额", "收入"]));
+
+        let cube = CubeBuilder::new("order_metrics", "orders")
+            .priority(100)
+            .build();
+        assert_eq!(cube.priority, 100);
     }
 
     #[test]

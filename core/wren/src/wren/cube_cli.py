@@ -166,13 +166,18 @@ def list_cubes(mdl: _MdlOpt = None) -> None:
         return
     for cube in cubes:
         name = cube.get("name", "<unnamed>")
+        label = cube.get("label")
         base = cube.get("baseObject", "?")
+        priority = cube.get("priority", 0)
         measures = ", ".join(m.get("name", "") for m in cube.get("measures", []))
         dims = ", ".join(d.get("name", "") for d in cube.get("dimensions", []))
         time_dims = ", ".join(
             td.get("name", "") for td in cube.get("timeDimensions", [])
         )
-        typer.echo(f"  {name} (base: {base})")
+        heading = f"  {name}"
+        if label:
+            heading += f" — {label}"
+        typer.echo(f"{heading} (base: {base}, priority: {priority})")
         if measures:
             typer.echo(f"    measures: {measures}")
         if dims:
@@ -197,6 +202,73 @@ def describe(
         typer.echo(f"Cube '{name}' not found.", err=True)
         raise typer.Exit(1)
     typer.echo(json.dumps(cube, indent=2))
+
+
+# ── wren cube resolve ─────────────────────────────────────────────────────
+
+
+@cube_app.command()
+def resolve(
+    question: Annotated[
+        str,
+        typer.Argument(help="Natural-language metric question to resolve."),
+    ],
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", min=1, max=20, help="Maximum Cube matches."),
+    ] = 5,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON."),
+    ] = False,
+    mdl: _MdlOpt = None,
+) -> None:
+    """Resolve Chinese or English business terms to stable Cube/member names."""
+    from wren.cube_semantics import resolve_cubes  # noqa: PLC0415
+
+    result = resolve_cubes(_load_manifest_dict(mdl), question, limit=limit)
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    matches = result["matches"]
+    if not matches:
+        typer.echo("No matching cube or member found.")
+        return
+    if result["ambiguous"]:
+        typer.echo(
+            "Multiple cubes match closely; inspect the candidates before querying."
+        )
+    for index, match in enumerate(matches, 1):
+        label = match.get("label")
+        title = f"{index}. {match['cube']}"
+        if label:
+            title += f" — {label}"
+        typer.echo(f"{title} (score: {match['score']}, priority: {match['priority']})")
+        for member_key, heading in (
+            ("measures", "measures"),
+            ("dimensions", "dimensions"),
+            ("timeDimensions", "time dimensions"),
+        ):
+            members = match[member_key]
+            if members:
+                values = ", ".join(
+                    f"{member.get('label', member['name'])} -> {member['name']}"
+                    for member in members
+                )
+                typer.echo(f"   {heading}: {values}")
+        if match["hierarchies"]:
+            values = "; ".join(
+                f"{hierarchy.get('label', hierarchy['name'])}: "
+                f"{' -> '.join(hierarchy['levels'])}"
+                for hierarchy in match["hierarchies"]
+            )
+            typer.echo(f"   hierarchies: {values}")
+        suggested = match["suggestedQuery"]
+        typer.echo(
+            "   stable names: "
+            + json.dumps(suggested, ensure_ascii=False, separators=(",", ":"))
+        )
 
 
 # ── wren cube query ────────────────────────────────────────────────────────
@@ -292,9 +364,19 @@ def query(
             offset,
         )
 
-    mdl_json = _load_mdl_json(mdl)
+    manifest = _load_manifest_dict(mdl)
+    mdl_json = json.dumps(manifest)
 
     from wren_core import cube_query_to_sql  # noqa: PLC0415
+
+    data_source = manifest.get("dataSource") or manifest.get("data_source")
+    if data_source == "maxcompute":
+        from wren.engine import (  # noqa: PLC0415
+            _core_compatible_manifest_json,
+        )
+        from wren.model.data_source import DataSource  # noqa: PLC0415
+
+        mdl_json = _core_compatible_manifest_json(mdl_json, DataSource.maxcompute)
 
     try:
         sql = cube_query_to_sql(json.dumps(cube_query), mdl_json)

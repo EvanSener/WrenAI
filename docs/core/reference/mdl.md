@@ -4,7 +4,7 @@ sidebar_label: MDL schema
 
 # MDL schema reference
 
-This page documents every YAML artifact in a Wren project — `wren_project.yml`, models, relationships, views, cubes, and the `knowledge/` files — with the full field surface for each.
+This page documents every YAML artifact in a Wren project — `wren_project.yml`, models, relationships, views, global metrics, global dimensions, cubes, and the `knowledge/` files — with the full field surface for each.
 
 > For the conceptual framing of MDL, see [What does MDL do for the agent?](/oss/concepts/what_is_mdl). For the project lifecycle commands, see [Manage project](/oss/guides/manage_project). For the canonical YAML compilation flow, run `wren context build` after editing.
 
@@ -27,13 +27,23 @@ my_project/
 │   │   └── sql.yml                # statement in separate file (optional)
 │   └── top_customers/
 │       └── metadata.yml           # statement inline
+├── metrics/                        # executable, project-global metric contracts
+│   ├── total_revenue/
+│   │   └── metadata.yml
+│   └── order_count/
+│       └── metadata.yml
+├── dimensions/                     # executable, project-global dimension contracts
+│   ├── country/
+│   │   └── metadata.yml
+│   └── order_date/
+│       └── metadata.yml
 ├── cubes/
 │   └── revenue/
 │       └── metadata.yml
 ├── relationships.yml              # all relationships
 ├── knowledge/                     # business context (schema_version 5+)
 │   ├── rules/                     # business rules for agents (supersedes instructions.md)
-│   ├── glossary/  metrics/  caveats/
+│   ├── glossary/  metrics/  caveats/ # metrics/ here is prose, not executable DSL
 │   ├── sql/                       # NL→SQL pairs — source of truth for memory
 │   └── knowledge.yml              # knowledge-axis schema_version (decoupled from MDL)
 ├── instructions.md                # deprecated — move into knowledge/rules/ (still read)
@@ -86,6 +96,13 @@ Each model is its own directory under `models/`. A model defines:
 - where its data comes from — `table_reference` or `ref_sql`
 - which columns are exposed
 - relationships and calculated fields
+
+Physical-table columns are a source snapshot rather than a live database
+contract. For MaxCompute projects, run `wren context sync-models --check` to
+detect drift or `wren context sync-models --apply-additive --watch` to keep
+safe additions synchronized. Removed, type-changed, or partition-changed fields
+are breaking and block automatic writes so dependent Dimensions, Metrics,
+Cubes, relationships, and calculated columns cannot silently become invalid.
 
 ### Model fields
 
@@ -249,45 +266,133 @@ The statement can live inline or in a sibling `sql.yml` file. The `sql.yml` take
 
 Views inherit no column declarations — schema is inferred from the statement at query time. Views can reference other views; the engine expands them recursively before resolving models.
 
+## Global metrics (`metrics/<name>/metadata.yml`)
+
+Global metrics are executable project-level contracts. Define the technical
+name, SQL expression, result type, and business semantics once; any compatible
+Cube can reference the metric by name.
+
+```yaml
+# metrics/total_revenue/metadata.yml
+name: total_revenue
+expression: SUM(amount)
+type: DOUBLE
+label: 广告销售额
+description: 归因给广告的销售金额总和。
+synonyms: [销售额, 广告收入]
+```
+
+Derived metrics reference other global metrics:
+
+```yaml
+# metrics/average_order_value/metadata.yml
+name: average_order_value
+expression: total_revenue / NULLIF(order_count, 0)
+type: DOUBLE
+label: 平均订单金额
+description: 广告销售额除以订单量。
+```
+
+Here `order_count` is another global metric, defined separately with
+`expression: COUNT(*)`.
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Globally unique stable technical name; must match the directory name. |
+| `expression` | yes | Aggregation expression or expression over other global metric names. |
+| `type` | yes | Result type emitted into the runtime Cube measure. |
+| `label` | no | Human-readable display label. |
+| `description` | no | Precise business definition and scope. |
+| `synonyms[]` | no | Unique natural-language discovery terms. |
+
+`wren context validate` and `wren context build` parse the expression AST,
+recursively expand metric dependencies, and verify that every atomic field is
+exposed by each referencing Cube's `base_object`. Missing fields, dependency
+cycles, duplicate metric names, unknown Cube metric references, and unprovable
+wildcard View projections are build-blocking errors.
+
+Top-level `metrics/` must not be confused with `knowledge/metrics/`.
+`knowledge/metrics/` is optional Markdown business context for agents; it does
+not enter the executable MDL or provide metric identity.
+
+## Global dimensions (`dimensions/<name>/metadata.yml`)
+
+Global dimensions are reusable semantic fields. They are intentionally selected
+business attributes, not a copy of every physical column. A definition may map
+a field directly or derive a new attribute with SQL:
+
+```yaml
+# dimensions/customer_tier/metadata.yml
+name: customer_tier
+expression: CASE WHEN lifetime_value >= 10000 THEN 'VIP' ELSE 'STANDARD' END
+type: VARCHAR
+label: 客户分层
+description: 按客户历史价值划分的业务层级。
+synonyms: [客户等级, 会员层级]
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Globally unique stable technical name; must match the directory name. |
+| `expression` | yes | Direct field mapping or derived row-level SQL expression. |
+| `type` | yes | Result type emitted into the runtime Cube dimension. |
+| `label` | no | Human-readable display label. |
+| `description` | no | Precise business meaning and value scope. |
+| `synonyms[]` | no | Unique natural-language discovery terms. |
+
+A Cube references the same catalog from either `dimensions` or
+`time_dimensions`; the latter marks a date/time member for query-time
+granularity. The compiler parses every expression and verifies that all atomic
+fields exist on the Cube's `base_object`. Duplicate names, unknown references,
+reuse in both roles within one Cube, missing fields, and wildcard View
+projections that cannot prove their output columns are build-blocking errors.
+
 ## Cubes (`cubes/<name>/metadata.yml`)
 
-A cube is a pre-aggregated semantic object: a base model or view, plus declared measures, dimensions, time dimensions, and hierarchies.
+A cube is an analysis entry point: a base model or view, global metric
+references, dimensions, time dimensions, and hierarchies.
 
 ```yaml
 name: revenue
 base_object: orders
+label: 广告收入分析
+description: 广告收入、订单及转化效果的统一分析入口。
+synonyms: [广告效果, 投放收入]
+priority: 100
 measures:
-  - name: total
-    expression: SUM(amount)
-    type: DOUBLE
-  - name: order_count
-    expression: COUNT(*)
-    type: BIGINT
+  - total_revenue
+  - order_count
+  - average_order_value
 dimensions:
-  - name: status
-    expression: status
-    type: VARCHAR
+  - country
+  - city
 time_dimensions:
-  - name: order_date
-    expression: order_date
-    type: DATE
+  - order_date
 hierarchies:
-  - name: time
-    levels: [year, quarter, month]
+  location_drill: [country, city]
 ```
 
 | Field | Required | Description |
 |---|---|---|
 | `name` | yes | Unique cube name. |
 | `base_object` | yes | Model or view this cube aggregates over. |
-| `measures[]` | yes | Aggregated values (`expression` + `type`). |
-| `dimensions[]` | no | Categorical group-bys. |
-| `time_dimensions[]` | no | Time-based group-bys. Granularity is applied at query time via `--time-dimension name:granularity` (see [CLI reference](/oss/reference/cli#wren-cube--pre-aggregation-queries)). |
-| `hierarchies[]` | no | Ordered levels for drill-down (year → quarter → month). |
-| `refresh_time` | no | Cache refresh interval. |
-| `properties` | no | Arbitrary metadata. |
+| `label` | no | Human-readable display label. It does not replace the stable `name` used by CubeQuery. |
+| `description` | no | Business definition exposed to schema description and semantic memory. |
+| `synonyms[]` | no | Natural-language terms used to discover the cube. |
+| `priority` | no | Integer `0..1000` used only to break equal semantic discovery scores; higher wins. Default `0`. |
+| `measures[]` | yes | Global metric names. Inline measure objects (`name` + `expression` + `type`) remain supported for backward compatibility within one Cube; repeating an inline name across Cubes is rejected. |
+| `dimensions[]` | no | Global dimension names exposed as categorical group-bys. Inline objects remain compatible within one Cube. |
+| `time_dimensions[]` | no | Global dimension names exposed as time-based group-bys. Granularity is applied at query time via `--time-dimension name:granularity` (see [CLI reference](/oss/reference/cli#wren-cube--pre-aggregation-queries)). |
+| `hierarchies` | no | Map of stable hierarchy name to an ordered dimension list, from coarse to fine. |
 
 Cubes are queried structurally via `wren cube query`, not by writing raw `GROUP BY` SQL. See [Pre-aggregate with cubes](/oss/guides/cubes) for the agent-facing recipe.
+
+`label`, `description`, and `synonyms` follow the same separation used by mature semantic layers: a stable technical name for APIs, a display label for humans, and descriptive metadata for discovery. They never change SQL identifiers or expressions. Use `wren cube resolve "<question>" --json` before building a CubeQuery from natural language.
+
+The source Cube contains metric and dimension name references, while compiled
+`target/mdl.json` contains the expanded inline measure/dimension objects
+expected by the current Wren Engine. There are no new top-level runtime
+`metrics` or `dimensions` fields, so existing MDL consumers remain compatible.
 
 ## Business rules (`knowledge/rules/`)
 

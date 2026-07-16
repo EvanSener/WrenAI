@@ -220,19 +220,39 @@ _CUBE_MANIFEST = {
         {
             "name": "order_metrics",
             "baseObject": "orders",
+            "label": "订单指标",
+            "description": "订单主题的统一分析指标",
+            "synonyms": ["订单分析", "交易指标"],
             "measures": [
                 {
                     "name": "revenue",
                     "expression": "SUM(o_totalprice)",
                     "type": "DOUBLE",
+                    "label": "订单销售额",
+                    "description": "订单总销售额",
+                    "synonyms": ["销售额", "收入"],
                 },
                 {"name": "order_count", "expression": "COUNT(*)", "type": "BIGINT"},
             ],
             "dimensions": [
-                {"name": "status", "expression": "o_orderstatus", "type": "VARCHAR"}
+                {
+                    "name": "status",
+                    "expression": "o_orderstatus",
+                    "type": "VARCHAR",
+                    "label": "订单状态",
+                    "description": "订单状态",
+                    "synonyms": ["状态"],
+                }
             ],
             "timeDimensions": [
-                {"name": "created_at", "expression": "o_orderdate", "type": "DATE"}
+                {
+                    "name": "created_at",
+                    "expression": "o_orderdate",
+                    "type": "DATE",
+                    "label": "下单日期",
+                    "description": "下单日期",
+                    "synonyms": ["订单日期"],
+                }
             ],
             "hierarchies": {"time_drill": ["created_at"]},
         }
@@ -249,6 +269,9 @@ class TestCubeSchemaItems:
         cube = cubes[0]
         assert cube["item_name"] == "order_metrics"
         assert cube["model_name"] == "orders"
+        assert "订单指标" in cube["text"]
+        assert "订单主题的统一分析指标" in cube["text"]
+        assert "订单分析, 交易指标" in cube["text"]
         assert "revenue" in cube["text"]
         assert "status" in cube["text"]
         assert "created_at" in cube["text"]
@@ -261,6 +284,9 @@ class TestCubeSchemaItems:
         assert revenue["expression"] == "SUM(o_totalprice)"
         assert revenue["model_name"] == "order_metrics"
         assert revenue["is_calculated"] is True
+        assert "订单销售额" in revenue["text"]
+        assert "订单总销售额" in revenue["text"]
+        assert "销售额, 收入" in revenue["text"]
 
     def test_cube_dimension_record(self):
         items = extract_schema_items(_CUBE_MANIFEST)
@@ -268,6 +294,8 @@ class TestCubeSchemaItems:
         assert len(dims) == 1
         assert dims[0]["item_name"] == "status"
         assert dims[0]["expression"] == "o_orderstatus"
+        assert "订单状态" in dims[0]["text"]
+        assert "状态" in dims[0]["text"]
 
     def test_time_dimension_record(self):
         items = extract_schema_items(_CUBE_MANIFEST)
@@ -275,6 +303,8 @@ class TestCubeSchemaItems:
         assert len(tdims) == 1
         assert tdims[0]["item_name"] == "created_at"
         assert tdims[0]["expression"] == "o_orderdate"
+        assert "下单日期" in tdims[0]["text"]
+        assert "订单日期" in tdims[0]["text"]
 
     def test_total_count(self):
         items = extract_schema_items(_CUBE_MANIFEST)
@@ -285,8 +315,13 @@ class TestCubeSchemaItems:
         text = describe_schema(_CUBE_MANIFEST)
         assert "### Cube: order_metrics (base: orders)" in text
         assert "revenue (DOUBLE): SUM(o_totalprice)" in text
+        assert "订单销售额" in text
+        assert "订单总销售额" in text
+        assert "synonyms: 销售额, 收入" in text
         assert "status (VARCHAR): o_orderstatus" in text
+        assert "订单状态" in text
         assert "created_at (DATE): o_orderdate" in text
+        assert "下单日期" in text
         assert "time_drill: created_at" in text
 
     def test_extract_skips_cubes_when_absent(self):
@@ -996,7 +1031,9 @@ class TestMarkdownSourcedIndex:
 
         monkeypatch.setenv("WREN_PROJECT_HOME", str(tmp_path))
         store = MemoryStore(path=str(tmp_path / ".wren" / "memory"))
-        store.store_query("Top revenue", "SELECT SUM(amount) FROM o", tags="source:user")
+        store.store_query(
+            "Top revenue", "SELECT SUM(amount) FROM o", tags="source:user"
+        )
         store.store_query("A seed query", "SELECT 1", tags="source:seed")
 
         result = CliRunner().invoke(app, ["memory", "export"])
@@ -1004,7 +1041,9 @@ class TestMarkdownSourcedIndex:
 
         user_md = tmp_path / "knowledge" / "sql" / "top-revenue.md"
         assert user_md.exists()
-        assert not (tmp_path / "knowledge" / "sql" / "a-seed-query.md").exists()  # seed skipped
+        assert not (
+            tmp_path / "knowledge" / "sql" / "a-seed-query.md"
+        ).exists()  # seed skipped
         fm = parse_query_markdown(user_md)
         assert fm["source"] == "user"
         assert "created_at" in fm  # timestamp preserved

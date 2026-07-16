@@ -1,0 +1,6 @@
+name: order_count
+expression: COUNT(*)
+type: BIGINT
+label: Order count
+description: Number of orders in the selected scope.
+synonyms: [orders]

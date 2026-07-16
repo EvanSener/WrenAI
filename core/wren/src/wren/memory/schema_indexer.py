@@ -184,7 +184,17 @@ def _describe_relationship(rel: dict, lines: list[str]) -> None:
 def _describe_cube(cube: dict, lines: list[str]) -> None:
     name = cube.get("name", "")
     base = cube.get("baseObject", "?")
-    lines.append(f"### Cube: {name} (base: {base})")
+    label = _semantic_label(cube)
+    header = f"### Cube: {name} (base: {base})"
+    if label:
+        header += f" — {label}"
+    lines.append(header)
+    description = _semantic_description(cube)
+    if description:
+        lines.append(f"  Description: {description}")
+    synonyms = _semantic_synonyms(cube)
+    if synonyms:
+        lines.append(f"  Synonyms: {', '.join(synonyms)}")
     measures = [m for m in (cube.get("measures") or []) if isinstance(m, dict)]
     if measures:
         lines.append("  Measures:")
@@ -197,6 +207,7 @@ def _describe_cube(cube: dict, lines: list[str]) -> None:
                 line += f" ({mtype})"
             if expr:
                 line += f": {expr}"
+            line += _describe_semantic_suffix(m)
             lines.append(line)
     dims = [d for d in (cube.get("dimensions") or []) if isinstance(d, dict)]
     if dims:
@@ -210,6 +221,7 @@ def _describe_cube(cube: dict, lines: list[str]) -> None:
                 line += f" ({dtype})"
             if expr and expr != dname:
                 line += f": {expr}"
+            line += _describe_semantic_suffix(d)
             lines.append(line)
     tdims = [td for td in (cube.get("timeDimensions") or []) if isinstance(td, dict)]
     if tdims:
@@ -223,6 +235,7 @@ def _describe_cube(cube: dict, lines: list[str]) -> None:
                 line += f" ({ttype})"
             if expr and expr != tname:
                 line += f": {expr}"
+            line += _describe_semantic_suffix(td)
             lines.append(line)
     hierarchies = cube.get("hierarchies") or {}
     if isinstance(hierarchies, dict) and hierarchies:
@@ -459,12 +472,23 @@ def _cube_record(cube: dict, mdl_h: str, now: datetime) -> dict:
     )
 
     parts = [f"Cube '{name}' over '{base}'"]
+    _append_semantic_record_parts(parts, cube)
     if measures:
         parts.append(f". Measures: {measures}")
     if dims:
         parts.append(f". Dimensions: {dims}")
     if time_dims:
         parts.append(f". Time dimensions: {time_dims}")
+    hierarchy_names = []
+    hierarchy_map = cube.get("hierarchies") or {}
+    if isinstance(hierarchy_map, dict):
+        hierarchy_names.extend(
+            hierarchy_name
+            for hierarchy_name, levels in hierarchy_map.items()
+            if isinstance(hierarchy_name, str) and isinstance(levels, list)
+        )
+    if hierarchy_names:
+        parts.append(f". Hierarchies: {', '.join(hierarchy_names)}")
     text = "".join(parts) + "."
 
     return {
@@ -487,9 +511,11 @@ def _measure_record(measure: dict, cube_name: str, mdl_h: str, now: datetime) ->
     text = f"Measure '{name}' in cube '{cube_name}'"
     if dtype:
         text += f" ({dtype})"
+    parts = [text]
+    _append_semantic_record_parts(parts, measure)
     if expr:
-        text += f". Expression: {expr}"
-    text += "."
+        parts.append(f". Expression: {expr}")
+    text = "".join(parts) + "."
     return {
         "text": text,
         "item_type": "measure",
@@ -512,9 +538,11 @@ def _cube_dimension_record(
     text = f"Dimension '{name}' in cube '{cube_name}'"
     if dtype:
         text += f" ({dtype})"
+    parts = [text]
+    _append_semantic_record_parts(parts, dim)
     if expr:
-        text += f". Expression: {expr}"
-    text += "."
+        parts.append(f". Expression: {expr}")
+    text = "".join(parts) + "."
     return {
         "text": text,
         "item_type": "cube_dimension",
@@ -537,9 +565,11 @@ def _time_dimension_record(
     text = f"Time dimension '{name}' in cube '{cube_name}'"
     if dtype:
         text += f" ({dtype})"
+    parts = [text]
+    _append_semantic_record_parts(parts, tdim)
     if expr:
-        text += f". Expression: {expr}"
-    text += "."
+        parts.append(f". Expression: {expr}")
+    text = "".join(parts) + "."
     return {
         "text": text,
         "item_type": "time_dimension",
@@ -556,6 +586,62 @@ def _time_dimension_record(
 def _prop_description(obj: dict) -> str:
     """Extract description from the ``properties`` dict, if present."""
     return _prop_value(obj, "description")
+
+
+def _semantic_label(obj: dict) -> str:
+    """Return a semantic member's display label."""
+    value = obj.get("label")
+    if value not in (None, ""):
+        return str(value).strip()
+    return _prop_value(obj, "label")
+
+
+def _semantic_description(obj: dict) -> str:
+    value = obj.get("description")
+    if value not in (None, ""):
+        return str(value).strip()
+    return _prop_description(obj)
+
+
+def _semantic_synonyms(obj: dict) -> list[str]:
+    value = obj.get("synonyms")
+    if value is None:
+        value = _prop_raw(obj, "synonyms")
+    if isinstance(value, str):
+        candidates = value.split(",")
+    elif isinstance(value, Sequence) and not isinstance(value, bytes):
+        candidates = value
+    else:
+        return []
+    return [
+        item.strip() for item in candidates if isinstance(item, str) and item.strip()
+    ]
+
+
+def _describe_semantic_suffix(obj: dict) -> str:
+    parts: list[str] = []
+    label = _semantic_label(obj)
+    if label:
+        parts.append(f" — {label}")
+    description = _semantic_description(obj)
+    if description:
+        parts.append(f". {description}")
+    synonyms = _semantic_synonyms(obj)
+    if synonyms:
+        parts.append(f" [synonyms: {', '.join(synonyms)}]")
+    return "".join(parts)
+
+
+def _append_semantic_record_parts(parts: list[str], obj: dict) -> None:
+    label = _semantic_label(obj)
+    if label:
+        parts.append(f". Label: {label}")
+    description = _semantic_description(obj)
+    if description:
+        parts.append(f". Description: {description}")
+    synonyms = _semantic_synonyms(obj)
+    if synonyms:
+        parts.append(f". Synonyms: {', '.join(synonyms)}")
 
 
 def _table_reference_description(model: dict) -> str:

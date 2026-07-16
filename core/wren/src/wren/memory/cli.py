@@ -302,7 +302,10 @@ def fetch(
         typer.Option(
             "--type",
             "-t",
-            help="Filter: model|column|relationship|view (search strategy only)",
+            help=(
+                "Filter: model|column|relationship|view|cube|measure|"
+                "cube_dimension|time_dimension (search strategy only)"
+            ),
         ),
     ] = None,
     model_name: Annotated[

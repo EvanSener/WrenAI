@@ -11,6 +11,17 @@ from typing import Any
 
 import yaml
 
+from wren.dimension_compiler import (
+    analyze_cube_dimensions,
+    compile_cube_dimensions,
+    load_dimensions,
+)
+from wren.metric_compiler import (
+    analyze_cube_metrics,
+    compile_cube_metrics,
+    load_metrics,
+)
+
 _WREN_HOME = Path(os.environ.get("WREN_HOME", Path.home() / ".wren"))
 _DEFAULT_PROJECT = _WREN_HOME / "project"
 PROJECT_FILE = "wren_project.yml"
@@ -38,10 +49,26 @@ If this is the first query in the session, also run `wren context instructions` 
 
 When the user wants to add models, change schema, or onboard a new table:
 
-1. Edit YAML files in `models/`, `views/`, or `relationships.yml`
+1. Edit YAML files in `models/`, `views/`, `metrics/`, `dimensions/`, `cubes/`, or `relationships.yml`
 2. `wren context validate` — check structure
 3. `wren context build` — compile to `target/mdl.json`
 4. `wren memory index` — re-index schema for search
+
+For MaxCompute `table_reference` Models, use `wren context sync-models --check`
+to detect physical schema drift. Use
+`wren context sync-models --apply-additive --watch --interval 300` for
+continuous safe synchronization; removed, type-changed, or partition-changed
+fields block the complete update instead of silently invalidating semantics.
+
+Define reusable business metrics once in `metrics/<name>/metadata.yml`; Cubes
+reference those stable names and only choose a compatible `base_object` plus
+dimensions. Build fails if the base object does not expose every atomic field
+required by the metric dependency graph.
+
+Define reusable semantic fields once in `dimensions/<name>/metadata.yml`.
+Dimension expressions may map a physical field directly or derive an attribute
+with SQL (for example `CASE WHEN ... END`). Cubes only reference the dimensions
+they expose; build validates every atomic source field.
 
 ## Capturing business context
 
@@ -93,9 +120,23 @@ def _snake_to_camel(name: str) -> str:
 
 
 def _convert_keys(obj: Any) -> Any:
-    """Recursively convert all dict keys from snake_case to camelCase."""
+    """Recursively convert schema keys from snake_case to camelCase.
+
+    Hierarchy names are user-defined stable identifiers, not schema fields, so
+    preserve those map keys while converting the rest of the manifest.
+    """
     if isinstance(obj, dict):
-        return {_snake_to_camel(k): _convert_keys(v) for k, v in obj.items()}
+        converted = {}
+        for key, value in obj.items():
+            converted_key = _snake_to_camel(key)
+            if key == "hierarchies" and isinstance(value, dict):
+                converted[converted_key] = {
+                    hierarchy_name: _convert_keys(hierarchy)
+                    for hierarchy_name, hierarchy in value.items()
+                }
+            else:
+                converted[converted_key] = _convert_keys(value)
+        return converted
     if isinstance(obj, list):
         return [_convert_keys(item) for item in obj]
     return obj
@@ -783,12 +824,30 @@ def build_manifest(project_path: Path) -> dict:
     Returns the manifest in snake_case (YAML-native form).
     Use build_json() to get the camelCase JSON form for the engine.
     Instructions are not included — use load_instructions() separately.
+    Project-level metrics and dimensions are validated and expanded into Cube
+    members; the runtime manifest intentionally has no separate top-level
+    metrics or dimensions field.
     """
     project_config = load_project_config(project_path)
     models = load_models(project_path)
     views = load_views(project_path)
     relationships = load_relationships(project_path)
-    cubes = load_cubes(project_path)
+    metrics = load_metrics(project_path)
+    dimensions = load_dimensions(project_path)
+    metric_cubes = compile_cube_metrics(
+        cubes=load_cubes(project_path),
+        metrics=metrics,
+        models=models,
+        views=views,
+        data_source=project_config.get("data_source"),
+    )
+    cubes = compile_cube_dimensions(
+        cubes=metric_cubes,
+        dimensions=dimensions,
+        models=models,
+        views=views,
+        data_source=project_config.get("data_source"),
+    )
 
     # Strip internal metadata
     for m in models:
@@ -860,6 +919,10 @@ def validate_project(project_path: Path) -> list[ValidationError]:
     6. Views have a statement
     7. primary_key column exists in the model's columns
     8. table_reference (if used) has at least a table field
+    9. Global metrics are unique, parseable, and acyclic
+    10. Every Cube base_object exposes all atomic fields required by its metrics
+    11. Global dimensions are unique and parseable
+    12. Every Cube base_object exposes all atomic fields required by its dimensions
     """
     errors: list[ValidationError] = []
     sv = 1  # default; may be overridden below
@@ -936,6 +999,8 @@ def validate_project(project_path: Path) -> list[ValidationError]:
     views = load_views(project_path)
     relationships = load_relationships(project_path)
     cubes = load_cubes(project_path)
+    metrics = load_metrics(project_path)
+    dimensions = load_dimensions(project_path)
 
     model_names: set[str] = set()
     view_names: set[str] = set()
@@ -1179,11 +1244,37 @@ def validate_project(project_path: Path) -> list[ValidationError]:
                 )
             )
 
-    # Check cubes — only structural / reference checks here. Deep validation
-    # (measure cycles, hierarchy levels) runs Rust-side in
-    # AnalyzedWrenMDL::analyze (see wren-core lineage::validate_cubes).
+    # Compile every Cube metric reference against its base object during
+    # validation as well as build. This verifies global-name resolution,
+    # derived-metric dependency graphs, SQL expression syntax, and the full
+    # set of atomic fields before an MDL can be emitted.
+    _, metric_issues = analyze_cube_metrics(
+        cubes=cubes,
+        metrics=metrics,
+        models=models,
+        views=views,
+        data_source=config.get("data_source") if isinstance(config, dict) else None,
+    )
+    errors.extend(
+        ValidationError("error", issue.path, issue.message) for issue in metric_issues
+    )
+    compiled_dimension_cubes, dimension_issues = analyze_cube_dimensions(
+        cubes=cubes,
+        dimensions=dimensions,
+        models=models,
+        views=views,
+        data_source=config.get("data_source") if isinstance(config, dict) else None,
+    )
+    errors.extend(
+        ValidationError("error", issue.path, issue.message)
+        for issue in dimension_issues
+    )
+
+    # Remaining Cube structure/reference checks. Metric dependency and atomic
+    # field checks already ran above; Rust repeats cycle/hierarchy validation
+    # on the compiled runtime MDL as a final engine-side guard.
     cube_names: set[str] = set()
-    for i, cube in enumerate(cubes):
+    for i, cube in enumerate(compiled_dimension_cubes):
         src = cube.get("_source_file", f"cubes[{i}]")
         src_path = f"cubes/{src}"
         name = cube.get("name")
@@ -1195,6 +1286,20 @@ def validate_project(project_path: Path) -> list[ValidationError]:
                 ValidationError("error", src_path, f"duplicate cube name '{name}'")
             )
         cube_names.add(name)
+
+        priority = cube.get("priority", 0)
+        if (
+            not isinstance(priority, int)
+            or isinstance(priority, bool)
+            or not 0 <= priority <= 1000
+        ):
+            errors.append(
+                ValidationError(
+                    "error",
+                    f"{src_path} > {name}",
+                    "priority must be an integer between 0 and 1000",
+                )
+            )
 
         base = cube.get("base_object")
         if not base:
@@ -1244,6 +1349,13 @@ def validate_project(project_path: Path) -> list[ValidationError]:
         if isinstance(hierarchies, dict):
             for hname, levels in hierarchies.items():
                 if not isinstance(levels, list):
+                    errors.append(
+                        ValidationError(
+                            "error",
+                            f"{src_path} > {name} > hierarchies.{hname}",
+                            "hierarchy must be a list of dimension names",
+                        )
+                    )
                     continue
                 for level in levels:
                     if not isinstance(level, str):
@@ -1263,7 +1375,6 @@ def validate_project(project_path: Path) -> list[ValidationError]:
                                 f"references unknown dimension '{level}'",
                             )
                         )
-
     return errors
 
 
@@ -1558,6 +1669,11 @@ def _prop_description(item: dict) -> str | None:
     return (item.get("properties") or {}).get("description")
 
 
+def _semantic_description(item: dict) -> str | None:
+    """Read first-class semantic descriptions with legacy properties fallback."""
+    return item.get("description") or _prop_description(item)
+
+
 def _model_semantic_description(model: dict) -> str | None:
     props = model.get("properties") or {}
     if isinstance(props, dict):
@@ -1600,6 +1716,32 @@ def _check_descriptions(manifest: dict, *, strict: bool = False) -> list[str]:
                 "views with descriptions are indexed as NL-SQL examples in memory"
             )
 
+    for cube in manifest.get("cubes", []):
+        cube_name = cube.get("name", "<unknown>")
+        if not _semantic_description(cube):
+            warnings.append(
+                f"Cube '{cube_name}' has no description — "
+                "add description to improve natural-language discovery"
+            )
+        for measure in cube.get("measures", []) or []:
+            measure_name = measure.get("name", "<unknown>")
+            if not _semantic_description(measure):
+                warnings.append(
+                    f"Measure '{measure_name}' in cube '{cube_name}' has no description"
+                )
+        if strict:
+            for member_kind, members in (
+                ("Dimension", cube.get("dimensions", []) or []),
+                ("Time dimension", cube.get("timeDimensions", []) or []),
+            ):
+                for member in members:
+                    member_name = member.get("name", "<unknown>")
+                    if not _semantic_description(member):
+                        warnings.append(
+                            f"{member_kind} '{member_name}' in cube "
+                            f"'{cube_name}' has no description"
+                        )
+
     return warnings
 
 
@@ -1616,8 +1758,8 @@ def validate_manifest(
         data_source: Target data source (used for view dry-plan dialect).
         level: Validation level.
             "error"   — view SQL dry-plan only (CI/CD)
-            "warning" — + model/view missing description (default)
-            "strict"  — + column missing description
+            "warning" — + model/view/cube/measure missing description (default)
+            "strict"  — + column and cube dimension missing description
 
     Returns:
         Dict with "errors" (list) and "warnings" (list).

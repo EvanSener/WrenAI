@@ -76,6 +76,12 @@ For memory-specific decisions, see the `memory` reference (run `wren skills get 
 For SQL syntax, CTE-based modeling, and error diagnosis, see the `wren-sql` reference (run `wren skills get usage --full`).
 For project structure, MDL field definitions, and CLI workflow details, see the [documentation](https://github.com/Canner/WrenAI/tree/main/docs/core).
 
+For MaxCompute physical-schema drift, run `wren context sync-models --check`.
+Use `--apply-additive` (optionally with `--watch --interval 300`) to apply only
+safe additions after whole-project validation. Removed fields, type changes,
+partition changes, and any affected Cube/Dimension/Metric contract block the
+entire sync; never loop `context add-table --force` as an unattended refresh.
+
 ---
 
 ## Workflow 1: Answering a data question
@@ -327,10 +333,20 @@ hand-write GROUP BY / DATE_TRUNC.
 wren cube describe <cube_name>
 ```
 
-Shows the cube's baseObject, measures (with expressions), dimensions,
-time dimensions, and hierarchies.
+Shows the cube's baseObject, semantic metadata (`label`, `description`,
+`synonyms`), measures, dimensions, time dimensions, and hierarchies.
 
 ### Step 3: Match user's question to cube measures + dimensions
+
+Resolve the original question deterministically first:
+
+```bash
+wren cube resolve "<user question>" --json
+```
+
+The resolver uses `label`, `description`, and `synonyms`, but emits stable
+member `name` values. For drill/detail requests it expands the cube's matching
+hierarchy into explicit dimensions.
 
 | User phrase | Maps to |
 |---|---|
@@ -370,6 +386,17 @@ verification before paying for execution on a remote warehouse.
 | `Unknown dimension 'X'` | `wren cube describe <cube>` for available dimensions |
 | `Cube 'X' not found` | `wren cube list` |
 | `Circular dependency detected` | Derived measure references itself — inspect the cube YAML |
+| `CUBE_METRIC_FIELD_MISSING` | The Cube's `base_object` lacks an atomic field required by a global metric — inspect the dependency path and fix the model/view binding |
+| `CUBE_DIMENSION_FIELD_MISSING` | The Cube's `base_object` lacks an atomic field required by a global dimension — fix the model/view binding or choose another Cube |
+
+Reusable metric formulas live under `metrics/<name>/metadata.yml`; source Cube
+files reference those stable names. `wren context build` expands them into the
+inline measures shown by `wren cube describe` and consumed by the runtime.
+Reusable dimension attributes, including derived `CASE WHEN` expressions, live
+under `dimensions/<name>/metadata.yml`; Cube `dimensions` and
+`time_dimensions` reference their stable names and compile to the same runtime
+member shape. When several Cubes expose the same members, semantic score wins
+first and Cube `priority` only breaks an equal-score tie.
 
 ### When NOT to use cube query
 
