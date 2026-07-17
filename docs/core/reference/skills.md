@@ -157,36 +157,40 @@ complete query lifecycle.
 ```text
 User asks a question
   │
-  ├── 1. Gather context
-  │     wren memory fetch -q "..."
-  │     wren context instructions      (first query only)
+  ├── 1. Load compact rules             (first query in session only)
+  │     wren context instructions --compact
   │
-  ├── 2. Recall past queries
-  │     wren memory recall -q "..." --limit 3
+  ├── 2. Prefer one governed Graph execution
+  │     wren graph query --question "..." --execute --result-output json
   │
-  ├── 3. Assess complexity
-  │     Simple → write SQL directly
-  │     Complex → decompose into sub-questions
+  ├── 3. If Graph artifacts are absent, discover once
+  │     memory recall OR context show OR cube resolve
   │
-  ├── 4. Write and execute SQL
-  │     Simple: wren --sql "..."
-  │     Complex: wren dry-plan first, then execute
+  ├── 4. Execute one governed Cube or MDL SQL candidate
   │
-  └── 5. Store result
-        wren memory store --nl "..." --sql "..."
+  └── 5. At most one evidence-backed correction
+        second failure → stop and request the exact missing input
 ```
+
+The hard ceiling is two generated-and-executed answer SQL candidates per user
+question across the Agent and delegated tools. Missing date/business scope,
+ambiguous semantics, permissions, security rejection, or an unavailable service
+are clarification/external-state failures and must not trigger a speculative
+second query. Query storage is explicit opt-in only.
 
 ### Error recovery
 
-The skill includes a two-layer error diagnosis strategy:
+For an explicitly requested technical diagnosis, the skill includes a two-layer
+error diagnosis strategy. It is not an autonomous retry loop for an ordinary
+data question:
 
 | Layer | Tool | Diagnoses |
 |-------|------|-----------|
 | **MDL-level** | `wren dry-plan` fails | Wrong model/column names, missing relationships |
 | **DB-level** | `wren dry-plan` succeeds but execution fails | Type mismatch, permissions, dialect issues |
 
-The agent checks `dry-plan` output first to isolate whether the error is
-in the semantic layer or the database.
+After the two-attempt answer budget is exhausted, the Agent reports the compact
+error and waits for user input before entering this flow.
 
 ### Additional workflows
 
@@ -199,9 +203,8 @@ in the semantic layer or the database.
 
 `wren skills get usage --full` inlines two reference documents:
 
-- **memory.md** — decision logic for when to `index`, `fetch`, `store`,
-  and `recall`. Covers the hybrid retrieval strategy, store-by-default
-  policy, and full lifecycle examples.
+- **memory.md** — decision logic for when to `index`, `fetch`, explicitly
+  `store`, and `recall`, including the conversation-level failure circuit.
 - **wren-sql.md** — how the CTE-based rewrite pipeline works. Explains
   how the engine injects model CTEs, what SQL features are supported,
   and how to use `dry-plan` to diagnose errors layer by layer.

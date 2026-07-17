@@ -323,6 +323,8 @@ def build_graph_explain(
                 "sourceModel": fact["sourceModel"],
                 "strategy": fact["strategy"],
                 "sourceKeys": list(fact["sourceKeys"]),
+                "dateRange": deepcopy(fact.get("dateRange")),
+                "relationPartitions": deepcopy(fact.get("relationPartitions") or {}),
                 "metrics": [
                     {
                         "name": metric["name"],

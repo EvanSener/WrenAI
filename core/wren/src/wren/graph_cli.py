@@ -8,6 +8,7 @@ Cube, or query build paths.
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -35,6 +36,12 @@ from wren.graph_cli_support import (
 from wren.graph_cli_support import (
     validate_output as _validate_output,
 )
+from wren.graph_observability import (
+    GraphQueryTimings,
+    echo_cli_error,
+)
+from wren.model.error import WrenError
+from wren.security import enforce_business_question
 from wren.semantic_graph import (
     GraphCompilationError,
     GraphPlanningError,
@@ -48,12 +55,177 @@ from wren.semantic_graph.ontology import (
     save_ontology_graph,
 )
 from wren.semantic_graph.question import plan_graph_question
+from wren.semantic_graph.relative_date import (
+    date_range_from_latest_partition,
+    extract_relative_date_window,
+    max_partition_probe_sql,
+    relative_partition_table,
+)
 
 graph_app = typer.Typer(
     name="graph",
     help="Build and inspect the additive semantic model graph.",
     no_args_is_help=True,
 )
+
+
+def _execute_graph_sql(
+    project_path: Path,
+    sql: str,
+    *,
+    connection_info: str | None,
+    connection_file: str | None,
+    limit: int | None,
+    result_output: str,
+    verbose_errors: bool = False,
+    timings: GraphQueryTimings | None = None,
+) -> None:
+    """Execute one graph-planned SQL through the normal governed query path.
+
+    Importing the shared CLI helpers lazily avoids a module cycle: the root CLI
+    registers ``graph_app`` after defining its engine factory and result printer.
+    Passing this project's MDL path keeps project-pinned profile resolution
+    aligned even when ``wren graph query --path ...`` runs outside the project.
+    """
+
+    from wren.cli import _build_engine, _print_result  # noqa: PLC0415
+
+    timing = timings or GraphQueryTimings(enabled=False)
+    mdl_path = project_path / "target" / "mdl.json"
+    try:
+        with timing.measure("resultFormatValidation"):
+            output = _validate_output(
+                result_output,
+                allowed={"csv", "json", "table"},
+            )
+        with ExitStack() as stack:
+            with timing.measure("engineSetup"):
+                engine = stack.enter_context(
+                    _build_engine(
+                        str(mdl_path),
+                        connection_info,
+                        connection_file,
+                        verbose_errors=verbose_errors,
+                    )
+                )
+            with timing.measure("sqlExecution"):
+                result = engine.query(sql, limit=limit)
+        with timing.measure("resultRendering"):
+            _print_result(result, output)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+
+
+def _execute_relative_graph_question(
+    project_path: Path,
+    question: str,
+    relative_window: dict[str, Any],
+    *,
+    source_model: str | None,
+    max_depth: int | None,
+    connection_info: str | None,
+    connection_file: str | None,
+    limit: int | None,
+    result_output: str,
+    verbose_errors: bool = False,
+    timings: GraphQueryTimings | None = None,
+) -> None:
+    """Resolve a latest-partition-relative question and execute its exact plan."""
+
+    from wren.cli import _build_engine, _print_result  # noqa: PLC0415
+
+    timing = timings or GraphQueryTimings(enabled=False)
+    mdl_path = project_path / "target" / "mdl.json"
+    try:
+        with timing.measure("resultFormatValidation"):
+            output = _validate_output(
+                result_output,
+                allowed={"csv", "json", "table"},
+            )
+        with timing.measure("securityPolicy"):
+            enforce_business_question(
+                question,
+                project_path=project_path,
+                entrypoint="graph.question",
+            )
+        with timing.measure("artifactLoading"):
+            semantic_graph, queryability_index = _load_artifacts(project_path)
+            ontology_graph = _load_optional_ontology(project_path)
+
+        # Date values do not affect path safety or source scoring. A one-day
+        # planning probe lets the governed planner select the source before the
+        # connector resolves that source's actual latest partition.
+        with timing.measure("graphPlanning"):
+            probe_plan = plan_graph_question(
+                semantic_graph,
+                queryability_index,
+                question,
+                ontology_graph=ontology_graph,
+                anchor_model=source_model,
+                max_depth=max_depth,
+                date_range_override={"start": "20000101", "end": "20000101"},
+            )
+            anchor_model = probe_plan["frontendResolution"]["selectedAnchor"]
+            table = relative_partition_table(semantic_graph, anchor_model)
+
+        with ExitStack() as stack:
+            with timing.measure("engineSetup"):
+                engine = stack.enter_context(
+                    _build_engine(
+                        str(mdl_path),
+                        connection_info,
+                        connection_file,
+                        verbose_errors=verbose_errors,
+                    )
+                )
+            with timing.measure("partitionProbe"):
+                latest_result = engine.query(max_partition_probe_sql(table), limit=1)
+                if latest_result.num_rows != 1 or latest_result.num_columns < 1:
+                    raise GraphPlanningError(
+                        "GRAPH_RELATIVE_DATE_ANCHOR_EMPTY",
+                        f"latest partition probe returned no value for '{table}'",
+                        details={"sourceModel": anchor_model, "table": table},
+                    )
+                latest_partition = latest_result.column(0)[0].as_py()
+                if latest_partition is None:
+                    raise GraphPlanningError(
+                        "GRAPH_RELATIVE_DATE_ANCHOR_EMPTY",
+                        f"latest partition probe returned null for '{table}'",
+                        details={"sourceModel": anchor_model, "table": table},
+                    )
+            with timing.measure("dateRangeResolution"):
+                date_range = date_range_from_latest_partition(
+                    relative_window,
+                    latest_partition,
+                )
+            with timing.measure("finalPlanning"):
+                plan = plan_graph_question(
+                    semantic_graph,
+                    queryability_index,
+                    question,
+                    ontology_graph=ontology_graph,
+                    anchor_model=source_model,
+                    max_depth=max_depth,
+                    date_range_override=date_range,
+                )
+            with timing.measure("sqlExecution"):
+                result = engine.query(plan["sql"], limit=limit)
+        with timing.measure("resultRendering"):
+            _print_result(result, output)
+    except typer.Exit:
+        raise
+    except GraphPlanningError as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+    except WrenError as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
 
 
 def _plan(
@@ -65,59 +237,103 @@ def _plan(
     request_path: Path | None = None,
     question: str | None = None,
     max_depth: int | None = None,
+    verbose_errors: bool = False,
+    timings: GraphQueryTimings | None = None,
 ) -> dict[str, Any]:
-    semantic_graph, queryability_index = _load_artifacts(project_path)
+    timing = timings or GraphQueryTimings(enabled=False)
     try:
         if question is not None:
-            if request_path is not None or metrics or dimensions:
-                raise GraphPlanningError(
-                    "GRAPH_QUESTION_ARGUMENT_CONFLICT",
-                    "--question cannot be combined with --request, --metrics, or --dimensions",
+            with timing.measure("securityPolicy"):
+                enforce_business_question(
+                    question,
+                    project_path=project_path,
+                    entrypoint="graph.question",
                 )
-            return plan_graph_question(
+        with timing.measure("artifactLoading"):
+            semantic_graph, queryability_index = _load_artifacts(project_path)
+            ontology_graph = (
+                _load_optional_ontology(project_path) if question is not None else None
+            )
+        with timing.measure("graphPlanning"):
+            return _plan_loaded_graph(
                 semantic_graph,
                 queryability_index,
-                question,
-                ontology_graph=_load_optional_ontology(project_path),
-                anchor_model=source_model,
+                ontology_graph=ontology_graph,
+                source_model=source_model,
+                metrics=metrics,
+                dimensions=dimensions,
+                request_path=request_path,
+                question=question,
                 max_depth=max_depth,
             )
-        if request_path is not None:
-            if source_model or metrics or dimensions:
-                raise GraphPlanningError(
-                    "GRAPH_REQUEST_ARGUMENT_CONFLICT",
-                    "--request cannot be combined with --source, --metrics, or --dimensions",
-                )
-            try:
-                request = yaml.safe_load(request_path.read_text(encoding="utf-8"))
-            except (OSError, yaml.YAMLError) as exc:
-                raise GraphPlanningError(
-                    "GRAPH_REQUEST_FILE_INVALID",
-                    f"cannot load graph request '{request_path}': {exc}",
-                ) from exc
-            if not isinstance(request, dict):
-                raise GraphPlanningError(
-                    "GRAPH_REQUEST_FILE_INVALID",
-                    "graph request root must be an object",
-                )
-            return plan_graph_query(semantic_graph, queryability_index, request)
-        if not source_model or not metrics:
+    except WrenError as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+    except GraphPlanningError as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+
+
+def _plan_loaded_graph(
+    semantic_graph: dict[str, Any],
+    queryability_index: dict[str, Any],
+    *,
+    ontology_graph: dict[str, Any] | None,
+    source_model: str | None,
+    metrics: str | None,
+    dimensions: str,
+    request_path: Path | None,
+    question: str | None,
+    max_depth: int | None,
+) -> dict[str, Any]:
+    if question is not None:
+        if request_path is not None or metrics or dimensions:
             raise GraphPlanningError(
-                "GRAPH_REQUEST_REQUIRED",
-                "provide --request or both --source and --metrics",
+                "GRAPH_QUESTION_ARGUMENT_CONFLICT",
+                "--question cannot be combined with --request, --metrics, or --dimensions",
             )
-        return plan_virtual_cube(
+        return plan_graph_question(
             semantic_graph,
             queryability_index,
-            source_model=source_model,
-            metrics=_parse_members(metrics),
-            dimensions=_parse_members(dimensions),
+            question,
+            ontology_graph=ontology_graph,
+            anchor_model=source_model,
+            max_depth=max_depth,
         )
-    except GraphPlanningError as exc:
-        typer.echo(f"Error [{exc.code}]: {exc}", err=True)
-        if exc.details is not None:
-            typer.echo(json.dumps(exc.details, indent=2, ensure_ascii=False), err=True)
-        raise typer.Exit(1) from exc
+    if request_path is not None:
+        if source_model or metrics or dimensions:
+            raise GraphPlanningError(
+                "GRAPH_REQUEST_ARGUMENT_CONFLICT",
+                "--request cannot be combined with --source, --metrics, or --dimensions",
+            )
+        try:
+            request = yaml.safe_load(request_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise GraphPlanningError(
+                "GRAPH_REQUEST_FILE_INVALID",
+                f"cannot load graph request '{request_path}': {exc}",
+            ) from exc
+        if not isinstance(request, dict):
+            raise GraphPlanningError(
+                "GRAPH_REQUEST_FILE_INVALID",
+                "graph request root must be an object",
+            )
+        return plan_graph_query(semantic_graph, queryability_index, request)
+    if not source_model or not metrics:
+        raise GraphPlanningError(
+            "GRAPH_REQUEST_REQUIRED",
+            "provide --request or both --source and --metrics",
+        )
+    return plan_virtual_cube(
+        semantic_graph,
+        queryability_index,
+        source_model=source_model,
+        metrics=_parse_members(metrics),
+        dimensions=_parse_members(dimensions),
+    )
 
 
 @graph_app.command()
@@ -441,24 +657,139 @@ def query(
         str,
         typer.Option("--output", "-o", help="Output format: sql|json."),
     ] = "sql",
+    execute: Annotated[
+        bool,
+        typer.Option(
+            "--execute",
+            help=(
+                "Execute the graph-planned SQL through WrenEngine and the active "
+                "connector instead of printing it."
+            ),
+        ),
+    ] = False,
+    result_output: Annotated[
+        str,
+        typer.Option(
+            "--result-output",
+            help="Execution result format with --execute: table|json|csv.",
+        ),
+    ] = "table",
+    connection_info: Annotated[
+        Optional[str],
+        typer.Option("--connection-info", help="Inline JSON connection string."),
+    ] = None,
+    connection_file: Annotated[
+        Optional[str],
+        typer.Option("--connection-file", help="Path to JSON connection file."),
+    ] = None,
+    limit: Annotated[
+        Optional[int],
+        typer.Option("--limit", "-l", min=1, help="Maximum rows to return."),
+    ] = None,
+    verbose_errors: Annotated[
+        bool,
+        typer.Option(
+            "--verbose-errors",
+            help="Include full exception text and structured error details on stderr.",
+        ),
+    ] = False,
+    timings: Annotated[
+        bool,
+        typer.Option(
+            "--timings",
+            help="Write one structured stage-timing JSON object to stderr.",
+        ),
+    ] = False,
 ) -> None:
-    """Generate SQL for a governed dynamic virtual Cube without executing it."""
+    """Generate or execute one governed dynamic virtual Cube plan.
 
-    output = _validate_output(output, allowed={"sql", "json"})
-    project_path = _discover_project(path)
-    plan = _plan(
-        project_path,
-        source_model=source_model,
-        metrics=metrics,
-        dimensions=dimensions,
-        request_path=request,
-        question=question,
-        max_depth=max_depth,
-    )
-    if output == "json":
-        typer.echo(json.dumps(plan, indent=2, ensure_ascii=False))
-        return
-    typer.echo(plan["sql"])
+    ``--execute`` sends the exact SQL produced by the Graph Planner through the
+    normal WrenEngine/connector path. Connector policies such as MaxCompute
+    latest-partition injection, read-only enforcement, limits and timeouts stay
+    centralized there; callers never need to copy or patch Graph SQL.
+    """
+
+    timing = GraphQueryTimings(enabled=timings)
+    status = "failure"
+    try:
+        with timing.measure("requestPreparation"):
+            output = _validate_output(output, allowed={"sql", "json"})
+            try:
+                relative_window = (
+                    extract_relative_date_window(question)
+                    if question is not None
+                    else None
+                )
+            except GraphPlanningError as exc:
+                timing.record_error(exc, stage="requestPreparation")
+                echo_cli_error(exc, verbose=verbose_errors)
+                raise typer.Exit(1) from exc
+        with timing.measure("projectDiscovery"):
+            project_path = _discover_project(path)
+
+        if execute and question is not None and relative_window is not None:
+            if request is not None or metrics or dimensions:
+                exc = GraphPlanningError(
+                    "GRAPH_QUESTION_ARGUMENT_CONFLICT",
+                    "--question cannot be combined with --request, --metrics, or "
+                    "--dimensions",
+                )
+                timing.record_error(exc, stage="requestPreparation")
+                echo_cli_error(exc, verbose=verbose_errors)
+                raise typer.Exit(1) from exc
+            _execute_relative_graph_question(
+                project_path,
+                question,
+                relative_window,
+                source_model=source_model,
+                max_depth=max_depth,
+                connection_info=connection_info,
+                connection_file=connection_file,
+                limit=limit,
+                result_output=result_output,
+                verbose_errors=verbose_errors,
+                timings=timing,
+            )
+            status = "success"
+            return
+        plan = _plan(
+            project_path,
+            source_model=source_model,
+            metrics=metrics,
+            dimensions=dimensions,
+            request_path=request,
+            question=question,
+            max_depth=max_depth,
+            verbose_errors=verbose_errors,
+            timings=timing,
+        )
+        if execute:
+            _execute_graph_sql(
+                project_path,
+                plan["sql"],
+                connection_info=connection_info,
+                connection_file=connection_file,
+                limit=limit,
+                result_output=result_output,
+                verbose_errors=verbose_errors,
+                timings=timing,
+            )
+            status = "success"
+            return
+        with timing.measure("resultRendering"):
+            if output == "json":
+                typer.echo(json.dumps(plan, indent=2, ensure_ascii=False))
+            else:
+                typer.echo(plan["sql"])
+        status = "success"
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        timing.record_error(exc)
+        echo_cli_error(exc, verbose=verbose_errors)
+        raise typer.Exit(1) from exc
+    finally:
+        timing.emit(status=status)
 
 
 @graph_app.command()

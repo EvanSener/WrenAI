@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from pathlib import Path
 
 _DEFAULT_MODEL = os.getenv(
     "WREN_EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
@@ -33,7 +34,31 @@ def get_embedding_function(model_name: str = _DEFAULT_MODEL):
     import lancedb.embeddings  # noqa: PLC0415
 
     registry = lancedb.embeddings.get_registry()
-    return registry.get("sentence-transformers").create(name=model_name)
+    return registry.get("sentence-transformers").create(
+        name=_prefer_cached_snapshot(model_name)
+    )
+
+
+def _prefer_cached_snapshot(model_name: str) -> str:
+    """Use an already-downloaded HuggingFace snapshot without a network HEAD.
+
+    SentenceTransformers otherwise checks the Hub even when every model file is
+    cached.  Resolving the official cache entry to its local snapshot path keeps
+    normal online first-use behavior while making subsequent Wren Memory starts
+    deterministic and fully offline.
+    """
+
+    expanded = Path(model_name).expanduser()
+    if expanded.exists():
+        return str(expanded.resolve())
+    repo_id = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
+    try:
+        from huggingface_hub import snapshot_download  # noqa: PLC0415
+        from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: PLC0415
+
+        return snapshot_download(repo_id, local_files_only=True)
+    except (ImportError, LocalEntryNotFoundError, OSError, ValueError):
+        return model_name
 
 
 @contextlib.contextmanager

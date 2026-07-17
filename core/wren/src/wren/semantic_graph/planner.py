@@ -12,6 +12,10 @@ from sqlglot.errors import ParseError
 from wren.metric_compiler import dialect_for
 from wren.semantic_graph.binding_policy import enforce_master_model, master_model
 from wren.semantic_graph.model import GraphPlanningError
+from wren.semantic_graph.partition import (
+    plan_relation_partitions,
+    render_partitioned_relation,
+)
 from wren.semantic_graph.queryability import find_binding_entry
 
 
@@ -22,6 +26,7 @@ def plan_virtual_cube(
     source_model: str,
     metrics: list[str],
     dimensions: list[str],
+    date_range: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create a safe single-fact plan and its target-dialect SQL."""
 
@@ -170,11 +175,19 @@ def plan_virtual_cube(
         )
 
     joins = _merge_join_tree(source_model, path_steps, edge_defs)
+    relation_partitions = plan_relation_partitions(
+        nodes,
+        {source_model, *(join["to"] for join in joins)},
+        date_range=date_range,
+        source_model=source_model,
+    )
     plan = {
         "schemaVersion": 1,
         "kind": "SINGLE_FACT_VIRTUAL_CUBE",
         "sourceModel": source_model,
         "sourceGrain": deepcopy(nodes[source_model].get("grain")),
+        "dateRange": deepcopy(date_range),
+        "relationPartitions": relation_partitions,
         "metrics": metric_plan,
         "dimensions": dimension_plan,
         "joins": joins,
@@ -199,7 +212,7 @@ def render_virtual_cube_sql(
         if join["to"] not in aliases:
             aliases[join["to"]] = f"g{len(aliases)}"
 
-    source_sql = _relation_sql(nodes[source_model], dialect)
+    source_sql = _partitioned_relation_sql(nodes[source_model], plan, dialect)
     from_sql = f"FROM {source_sql} AS {aliases[source_model]}"
     join_sql: list[str] = []
     for join in plan.get("joins") or []:
@@ -212,7 +225,8 @@ def render_virtual_cube_sql(
         )
         join_sql.append(
             "LEFT JOIN "
-            f"{_relation_sql(nodes[target], dialect)} AS {aliases[target]} "
+            f"{_partitioned_relation_sql(nodes[target], plan, dialect)} "
+            f"AS {aliases[target]} "
             f"ON {condition}"
         )
 
@@ -254,6 +268,19 @@ def render_virtual_cube_sql(
             for index, item in enumerate(group_items)
         )
     return "\n".join(lines)
+
+
+def _partitioned_relation_sql(
+    node: dict[str, Any], plan: dict[str, Any], dialect: str | None
+) -> str:
+    relation = _relation_sql(node, dialect)
+    partition = (plan.get("relationPartitions") or {}).get(node["name"])
+    return render_partitioned_relation(
+        relation,
+        node,
+        partition,
+        dialect=dialect,
+    )
 
 
 def _merge_join_tree(

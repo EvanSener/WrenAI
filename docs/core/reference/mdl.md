@@ -358,11 +358,14 @@ reuse in both roles within one Cube, missing fields, and wildcard View
 projections that cannot prove their output columns are build-blocking errors.
 
 For graph queries, `master_model` resolves the case where the same global
-dimension can bind to several nodes. The configured model becomes the only
-queryable binding while the other bindings remain visible as lineage. The
-legacy `relationships.yml > graph > master_data.attributes` form is still
-accepted; declaring both forms with different models fails graph compilation.
-Like metrics, the field never enters Cube MDL and is not valid on inline Cube
+dimension can bind to several nodes. The configured model remains authoritative
+while the other bindings remain visible as lineage. A source-local binding may
+avoid a redundant Join only when a safe relationship proves that all of its
+required fields are exactly the master's relationship key; descriptive fields
+still use the master. The legacy
+`relationships.yml > graph > master_data.attributes` form is still accepted;
+declaring both forms with different models fails graph compilation. Like
+metrics, the field never enters Cube MDL and is not valid on inline Cube
 dimensions.
 
 ## Cubes (`cubes/<name>/metadata.yml`)
@@ -434,7 +437,9 @@ chunk in memory.
 Rules are consumed by agents, not by the engine — they are excluded from `target/mdl.json`.
 Agents access them via:
 
-- `wren context instructions` — full text, run once at session start
+- `wren context instructions --compact` — rules with large audit-table bodies
+  summarized, run once at session start
+- `wren context instructions` — exact full text for row-level audits
 - `wren memory fetch -q "..."` — relevant chunks per query
 
 > A top-level `instructions.md` is still read (alongside `knowledge/rules/`) but is

@@ -44,7 +44,12 @@ _NEEDS_DATA_SOURCE = {
 }
 
 
-def get_connector(data_source: DataSource, connection_info):
+def get_connector(
+    data_source: DataSource,
+    connection_info,
+    *,
+    partition_registry=None,
+):
     module_path = _REGISTRY.get(data_source)
     if module_path is None:
         raise WrenError(
@@ -64,4 +69,9 @@ def get_connector(data_source: DataSource, connection_info):
 
     if data_source in _NEEDS_DATA_SOURCE:
         return module.create_connector(data_source, connection_info)
+    if data_source == DataSource.maxcompute:
+        return module.create_connector(
+            connection_info,
+            partition_registry=partition_registry,
+        )
     return module.create_connector(connection_info)

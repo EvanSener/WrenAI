@@ -144,6 +144,30 @@ def _print_results(results: list[dict], output: str) -> None:
                 typer.echo(str(r))
 
 
+def _guard_question(
+    question: str,
+    *,
+    entrypoint: str,
+    mdl: str | None = None,
+    project_path: Path | None = None,
+) -> None:
+    from wren.model.error import WrenError  # noqa: PLC0415
+    from wren.security import (  # noqa: PLC0415
+        discover_security_project,
+        enforce_business_question,
+    )
+
+    try:
+        enforce_business_question(
+            question,
+            project_path=project_path or discover_security_project(mdl),
+            entrypoint=entrypoint,
+        )
+    except WrenError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
 # ── Commands ──────────────────────────────────────────────────────────────
 
 
@@ -326,6 +350,7 @@ def fetch(
     Small schemas are returned as full plain text.  Large schemas use
     embedding search with optional --type and --model filters.
     """
+    _guard_question(query, entrypoint="memory.fetch", mdl=mdl)
     manifest = _load_manifest(mdl)
     store = _get_store(path)
     kwargs: dict = {"limit": limit, "item_type": item_type, "model_name": model_name}
@@ -374,6 +399,8 @@ def store(
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
 
+    _guard_question(nl, entrypoint="memory.store", project_path=project_path)
+
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     md_path = write_query_markdown(
         project_path, nl, sql, datasource=datasource, tags=tag_list
@@ -419,6 +446,7 @@ def recall(
     except SystemExit as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
+    _guard_question(query, entrypoint="memory.recall", project_path=project)
     idx = get_index(project, path or str(_default_memory_path()))
     results = idx.search(query, limit=limit, datasource=datasource)
     _annotate_markdown_paths(results)

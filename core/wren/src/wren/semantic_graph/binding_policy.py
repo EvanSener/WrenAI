@@ -28,6 +28,58 @@ def allowed_bindings(
     return [binding for binding in candidates if binding.get("model") == master]
 
 
+def source_equivalent_dimension_binding(
+    definition: dict[str, Any] | None,
+    bindings: Iterable[dict[str, Any]],
+    edges: Iterable[dict[str, Any]],
+    *,
+    source_model: str,
+) -> dict[str, Any] | None:
+    """Return a source-local binding when it is the master's relationship key.
+
+    ``master_model`` remains authoritative for descriptive attributes. A fact's
+    foreign key is already the canonical identity, however, so joining the
+    master merely to project the same key can turn valid historical keys into
+    nulls when the latest snapshot no longer contains the row.
+    """
+
+    master = master_model(definition)
+    if master is None or master == source_model:
+        return None
+    candidates = list(bindings)
+    local = next(
+        (item for item in candidates if item.get("model") == source_model),
+        None,
+    )
+    authoritative = next(
+        (item for item in candidates if item.get("model") == master),
+        None,
+    )
+    if local is None or authoritative is None:
+        return None
+    local_fields = {
+        item
+        for item in local.get("requiredFields") or []
+        if isinstance(item, str) and item
+    }
+    master_fields = {
+        item
+        for item in authoritative.get("requiredFields") or []
+        if isinstance(item, str) and item
+    }
+    if not local_fields or not master_fields:
+        return None
+    for edge in edges:
+        if [source_model, master] not in (edge.get("safeDirections") or []):
+            continue
+        columns = edge.get("conditionColumns") or {}
+        if local_fields.issubset(set(columns.get(source_model) or [])) and (
+            master_fields.issubset(set(columns.get(master) or []))
+        ):
+            return local
+    return None
+
+
 def enforce_master_model(
     *,
     member_kind: str,

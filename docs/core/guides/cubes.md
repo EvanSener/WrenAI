@@ -140,8 +140,11 @@ master_model: dim_country
 The graph compiler verifies that `dim_country` exists and contains every atomic
 field used by the expression. It keeps other compatible bindings for lineage,
 but Queryability, natural-language resolution, structured planning, derived
-metric expansion, and Explain all select the master binding. An explicit
-request for another model fails instead of silently overriding governance.
+metric expansion, and Explain select the master binding. A Dimension may use a
+source-local binding only when a safe relationship proves that every required
+field is the same master relationship key; Explain records
+`sourceEquivalentMasterKey`. Descriptive attributes and unproven alternatives
+remain pinned to the master, and an unsafe override fails closed.
 
 This field does not create a relationship; paths still come only from
 `relationships.yml > relationships`. It is also removed when a global member

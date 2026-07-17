@@ -416,7 +416,8 @@ wren memory index
 | Preview planned SQL | `wren dry-plan --sql "SELECT ..."` |
 | Validate SQL | `wren dry-run --sql "SELECT ..."` |
 | Show project context | `wren context show` |
-| Show instructions | `wren context instructions` |
+| Show compact Agent instructions | `wren context instructions --compact` |
+| Show full audit instructions | `wren context instructions` |
 | Build manifest | `wren context build` |
 | Fetch context for a question | `wren memory fetch --query "..."` |
 | Recall similar queries | `wren memory recall --query "..."` |

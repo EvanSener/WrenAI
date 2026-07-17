@@ -7,6 +7,7 @@ transpile path without connecting to any data source.
 from __future__ import annotations
 
 import base64
+import json
 
 import orjson
 import pytest
@@ -15,6 +16,7 @@ from wren import WrenEngine
 from wren.config import WrenConfig
 from wren.model.data_source import DataSource
 from wren.model.error import ErrorCode, WrenError
+from wren.security import ProjectSecurityPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -168,3 +170,53 @@ def test_non_strict_mode_allows_unknown_table(duckdb_engine: WrenEngine):
         duckdb_engine.dry_plan("SELECT * FROM unknown_table")
     except WrenError as e:
         assert e.error_code != ErrorCode.MODEL_NOT_FOUND
+
+
+def test_project_security_blocks_multi_statement_before_connector_and_audits(tmp_path):
+    audit_log = tmp_path / "security.jsonl"
+    policy = ProjectSecurityPolicy(enabled=True, audit_log=audit_log)
+    config = WrenConfig(strict_mode=True, read_only=True)
+    with WrenEngine(
+        _MANIFEST_STR,
+        DataSource.duckdb,
+        {"url": str(tmp_path), "format": "duckdb"},
+        fallback=False,
+        config=config,
+        security_policy=policy,
+    ) as engine:
+        with pytest.raises(WrenError) as exc_info:
+            engine.dry_plan("SELECT * FROM orders; DROP TABLE orders")
+        assert exc_info.value.error_code == ErrorCode.SECURITY_POLICY_VIOLATION
+        assert engine._connector is None
+
+    event = json.loads(audit_log.read_text(encoding="utf-8"))
+    assert event["entrypoint"] == "sql.policy"
+    assert event["decision"] == "deny"
+    assert "DROP TABLE" not in audit_log.read_text(encoding="utf-8")
+
+
+def test_project_security_keeps_sql_policy_when_audit_is_unavailable(tmp_path, caplog):
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied", encoding="utf-8")
+    policy = ProjectSecurityPolicy(
+        enabled=True,
+        audit_log=blocked_parent / "security.jsonl",
+    )
+    config = WrenConfig(strict_mode=True, read_only=True)
+
+    with caplog.at_level("WARNING", logger="wren.security"):
+        with WrenEngine(
+            _MANIFEST_STR,
+            DataSource.duckdb,
+            {"url": str(tmp_path), "format": "duckdb"},
+            fallback=False,
+            config=config,
+            security_policy=policy,
+        ) as engine:
+            planned = engine.dry_plan('SELECT o_orderkey FROM "orders" LIMIT 1')
+            with pytest.raises(WrenError) as exc_info:
+                engine.dry_plan("SELECT * FROM orders; DROP TABLE orders")
+
+    assert isinstance(planned, str)
+    assert exc_info.value.error_code == ErrorCode.SECURITY_POLICY_VIOLATION
+    assert "policy enforcement remains active" in caplog.text

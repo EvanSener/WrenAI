@@ -454,6 +454,10 @@ class TestDescribeSchema:
                     "properties": {
                         "description": "租户每日快照",
                     },
+                    "tableReference": {
+                        "table": "tenant_daily",
+                        "datePartitionType": "snapshot",
+                    },
                     "columns": [
                         {
                             "name": "tenant_id",
@@ -475,6 +479,7 @@ class TestDescribeSchema:
         text = describe_schema(manifest)
         assert "Partition columns:" not in text
         assert "Default partition filter" not in text
+        assert "Date partition type: snapshot" in text
         assert "ds (STRING) — 日期分区；未指定时默认查询最新分区。" in text
         assert "[partition column]" in text
         assert "[partition default: max_pt]" in text

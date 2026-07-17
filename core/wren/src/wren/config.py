@@ -21,10 +21,13 @@ class WrenConfig:
     denied_functions:
         Set of function names (lowercase) that are forbidden in SQL queries.
         Matching is case-insensitive.
+    read_only:
+        When ``True``, only one side-effect-free query statement is accepted.
     """
 
     strict_mode: bool = False
     denied_functions: frozenset[str] = field(default_factory=frozenset)
+    read_only: bool = False
 
 
 def load_config(wren_home: Path) -> WrenConfig:
@@ -71,4 +74,15 @@ def load_config(wren_home: Path) -> WrenConfig:
         )
     denied_functions = frozenset(f.lower() for f in denied_raw)
 
-    return WrenConfig(strict_mode=strict_mode_raw, denied_functions=denied_functions)
+    read_only_raw = raw.get("read_only", False)
+    if not isinstance(read_only_raw, bool):
+        raise WrenError(
+            ErrorCode.GENERIC_USER_ERROR,
+            f"{config_path}: 'read_only' must be a JSON boolean.",
+        )
+
+    return WrenConfig(
+        strict_mode=strict_mode_raw,
+        denied_functions=denied_functions,
+        read_only=read_only_raw,
+    )

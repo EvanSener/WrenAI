@@ -38,8 +38,51 @@ wren dry-run --sql 'SELECT * FROM "orders" LIMIT 1'
 # OK
 
 wren dry-run --sql 'SELECT * FROM "NonExistent"'
-# Error: table not found ...
+# Error [INVALID_SQL]: table not found ... phase=SQL_DRY_RUN
 ```
+
+Query, Dry Plan and Dry Run print a bounded first-line error by default; driver
+and warehouse stack traces plus SQL metadata are hidden. Add
+`--verbose-errors` only for operator/developer diagnosis:
+
+```bash
+wren query --sql '...' --verbose-errors
+wren dry-plan --sql '...' --verbose-errors
+wren dry-run --sql '...' --verbose-errors
+```
+
+## 项目级 Prompt 注入与查询安全
+
+`wren_project.yml` 可选的 `security` 配置只收紧当前项目，不改变未启用该配置的
+既有项目：
+
+```yaml
+security:
+  enabled: true
+  business_data_only: true
+  prompt_injection_guard: true
+  require_mdl_tables: true
+  read_only: true
+  audit_log: .wren/audit/security.jsonl
+  denied_functions: [pg_read_file, dblink, read_csv, shell, system, exec, eval]
+```
+
+- `business_data_only`：自然语言入口只接受业务数据查询，拒绝凭据、内部 Prompt、
+  架构/源码/配置、直连数据库和高风险执行请求。
+- `prompt_injection_guard`：在 Ask、Graph、Cube 和 Memory 调用后续工具前执行确定性
+  注入检测。
+- `require_mdl_tables`：SQL 只能引用 manifest 中的 Model/View。
+- `read_only`：只接受一条无副作用查询，拒绝 DDL/DML、会话命令、`SELECT INTO`
+  和多语句 SQL；MaxCompute 的显式连接参数不能关闭该项目的只读约束。
+- `denied_functions`：与内置文件/网络/执行/会话修改危险函数基线，以及
+  `~/.wren/config.json` 的全局拒绝项取并集。
+- `audit_log`：推荐使用项目相对路径 `.wren/audit/security.jsonl`；未配置时沿用
+  `~/.wren/audit/<project>-security.jsonl`。审计是 Wren 进程内的轻量 JSONL，
+  不依赖外部服务；写入失败只告警，不跳过安全判断，也不阻断已经通过安全判断的
+  业务查询。
+
+自然语言检测是前置减伤，不是最终权限边界。真正的执行边界仍是 SQL AST、MDL
+白名单、Connector 只读模式以及数据库自身的只读 IAM/网络权限。
 
 ## Overriding defaults
 
@@ -69,6 +112,22 @@ Both flat and envelope formats are accepted:
 # Envelope format (auto-unwrapped)
 {"datasource": "duckdb", "properties": {"url": "/data", "format": "duckdb"}}
 ```
+
+---
+
+## `wren context instructions`
+
+Print project business rules. The default remains the exact concatenated
+content for human review and row-level audits. Agents should normally load the
+rules once per session in compact form:
+
+```bash
+wren context instructions --compact
+```
+
+`--compact` preserves prose, lists, headings and small mapping tables. Large
+Markdown table bodies are replaced with a deterministic row-count/column-name
+summary; Knowledge source files are never modified.
 
 ---
 
@@ -125,10 +184,27 @@ wren context add-table dws_order_daily_df --force --replace-descriptions
 
 The command builds `target/mdl.json` after writing by default. Use `--no-build`
 to only write the model YAML. `--dry-run` prints the generated YAML without
-writing. MaxCompute partition columns are kept as queryable columns. Their
-partition semantics are recorded on the column itself with
-`properties.is_partition: true`. The latest `ds` partition also carries
-`properties.partition_default: max_pt`.
+writing. MaxCompute partition columns are kept as queryable columns and their
+partition semantics are initialized automatically. A physical table with a
+`ds` partition is classified as `incremental` when its unqualified name
+contains an `sp_`, `sb_`, or `sd_` segment; other `ds` tables initialize as
+`snapshot`. A source with no physical partition initializes as `unpartitioned`.
+Tables partitioned only by a non-`ds` key remain unclassified for manual review.
+
+The generated policy is recorded under `table_reference`:
+
+```yaml
+table_reference:
+  table: dws_order_daily_df
+  date_partition_type: incremental  # snapshot | incremental | unpartitioned
+```
+
+`snapshot` requires `ds` plus `partition_default: max_pt`; omission at query
+time is compiled to the latest partition. `incremental` requires an explicit
+`yyyyMMdd` day or closed range and must not carry `partition_default`.
+`unpartitioned` declares that the source has no date-partition column.
+The name rule is used only for initial scaffolding. During refresh, an existing
+explicit `date_partition_type` wins and remains the runtime source of truth.
 
 MaxCompute model names are derived from `table_reference.table`, so generated
 `name` stays aligned with the physical table reference.
@@ -470,6 +546,7 @@ cat query.json | wren cube query --from -
 | `--sql-only` | Print the generated SQL and exit without executing |
 | `--mdl` | Path to MDL JSON (defaults to `<project>/target/mdl.json`) |
 | `--output` | `table` (default), `json`, `csv` |
+| `--verbose-errors` | Include full exception diagnostics instead of the default compact first line |
 
 **Supported granularities:** `year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`.
 
@@ -478,6 +555,53 @@ cat query.json | wren cube query --from -
 
 See the [Cube guide](../guides/cubes.md) for YAML structure and
 validation rules.
+
+---
+
+## `wren graph query` — Dynamic Graph Query
+
+Compile a governed Graph Query to SQL (the compatible default), or plan and
+execute it in one process:
+
+```bash
+wren graph query --question "revenue by customer region"
+wren graph query \
+  --question "revenue by customer region" \
+  --execute \
+  --result-output json
+```
+
+`--execute` sends the Graph Planner's exact SQL through WrenEngine and the
+configured connector. Callers do not need a second `dry-plan`/`query` command
+or manual MaxCompute partition rewrite.
+
+For an incremental MaxCompute fact, provide explicit dates, a supported
+`最近/过去 N 天` or `last/past N days` phrase with `--execute`, or a structured
+request. Relative-day execution resolves the selected fact's latest available
+partition and compiles an exact inclusive range. A missing range fails with
+`GRAPH_PARTITION_RANGE_REQUIRED` instead of silently taking the latest day:
+
+```yaml
+dateRange:
+  start: '20260101'
+  end: '20260131'
+facts:
+  - sourceModel: dws_order_daily_df
+    metrics: [revenue]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--question` | Resolve a natural-language question through Ontology and Semantic Graph |
+| `--request` | Structured YAML/JSON `GraphQueryRequest` |
+| `--source`, `--metrics`, `--dimensions` | Stable-member structured input |
+| `--execute` | Execute instead of printing the plan SQL |
+| `--result-output` | Execution result: `table` (default), `json`, or `csv` |
+| `--limit` | Maximum returned rows; connector `max_rows` still applies |
+| `--output` | Compile-only output: `sql` (default) or plan `json` |
+| `--timings` | Write one `GRAPH_QUERY_TIMINGS` schema-v1 JSON event to stderr on success or failure |
+| `--verbose-errors` | Include full Graph details or exception metadata instead of the default compact first line |
+| `--connection-info`, `--connection-file` | Optional explicit connection; otherwise use the project profile |
 
 ---
 
@@ -534,8 +658,12 @@ default would alter agent behavior across an upgrade).
 
 ### `wren ask "<question>" --guided`
 
-For weaker LLMs. Prepends a strict task flow (`wren context show` →
-`wren memory recall` → write SQL → `wren dry-plan` → `wren query`).
+For weaker LLMs. Prepends a strict 1–3 command flow after project resolution:
+load compact project instructions once, prefer `wren graph query --execute`,
+then use at most one discovery step only when Graph artifacts are absent.
+Candidate answer SQL is limited to two evidence-governed attempts. Memory
+failures open a conversation-level circuit and successful queries are stored
+only on explicit request.
 
 ```bash
 wren ask "top 5 customers by revenue" --guided
@@ -543,8 +671,9 @@ wren ask "top 5 customers by revenue" --guided
 
 ### `wren ask "<question>" --direct`
 
-For stronger LLMs. Minimal wrapping; the agent decides which wren commands
-to run.
+For stronger LLMs. Compact wrapping with the same two-attempt and security
+boundaries; the installed Wren Skill can follow the direct Graph path without
+calling this compatibility prompt wrapper.
 
 ```bash
 wren ask "monthly orders trend" --direct

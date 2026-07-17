@@ -8,7 +8,7 @@ This reference covers the decision logic for each memory command. The main workf
 
 | Command | When to use |
 |---------|-------------|
-| `wren memory fetch -q "..."` | Default. Auto-selects full text (small schema) or embedding search (large schema) based on a 30K-char threshold. |
+| `wren memory fetch -q "..."` | Optional when Graph/context is insufficient and the conversation Memory circuit is closed. Auto-selects full text or embedding search. |
 | `wren memory fetch -q "..." --type T --model M` | When you need filtering (forces search strategy on large schemas). |
 | `wren memory describe` | When you want the full schema text and know it is small. |
 
@@ -69,21 +69,39 @@ wren memory watch   # poll + auto-reindex until Ctrl+C
 
 ---
 
+## Failure circuit breaker
+
+Wren Memory is optional acceleration. During a normal data-question flow,
+attempt at most one Memory command. If it exits non-zero, times out, cannot load
+its model, or cannot reach its configured provider:
+
+1. Mark Wren Memory unavailable for the rest of the current conversation.
+2. Do not retry or run any other `memory status/fetch/recall/store/index` command.
+3. Continue with Graph artifacts, `context instructions/show`, Cube, or direct
+   governed SQL.
+4. Mention the degradation at most once, only if it materially affects the answer.
+
+Do not install extras or download a model inside an ordinary question flow.
+Installation and indexing are explicit maintenance/onboarding operations.
+
+---
+
 ## Storing queries: `wren memory store`
 
-**Store by default** when a query executes successfully and there is a clear natural language question. The default is to store, not to wait for explicit confirmation.
+**Do not store by default.** Store only when the user explicitly asks to save or
+remember the query.
 
-**Store (default):**
-- Query executed successfully, user confirmed the result is correct
-- Query executed successfully, user continued with a follow-up (implicit confirmation)
-- Query executed successfully, user said nothing but the question had a clear NL description
+**Store only when all are true:**
+- The user explicitly requested persistence
+- The query executed successfully
+- The result is not disputed or exploratory
 
 **Do NOT store when:**
 - The query failed or returned an error
 - The user said the result is wrong or asked to fix it
 - The query is exploratory / throwaway (`SELECT * FROM orders LIMIT 5`) — the CLI auto-detects these
 - There is no natural language question — just raw SQL
-- The user explicitly asked not to store it
+- The user merely confirmed, continued with a follow-up, or said nothing
 
 ```bash
 wren memory store \
@@ -99,8 +117,11 @@ The `--nl` value should be the user's original question, not a paraphrase.
 ## Recalling queries: `wren memory recall`
 
 **When to recall:**
-- Before writing SQL for a new question, especially complex ones
-- When the user asks something similar to a past question
+- Graph/context is insufficient and the conversation Memory circuit is closed
+- A validated past SQL pattern is likely to remove ambiguity
+
+Do not recall before every question, and do not combine `recall` plus `fetch`
+in the same ordinary-query path.
 
 ```bash
 wren memory recall -q "monthly revenue by category" --limit 3
@@ -113,21 +134,17 @@ Use results as few-shot examples: adapt the SQL pattern to the current question.
 ## Full lifecycle example
 
 ```
-Session start:
-  1. wren memory status → if schema_items is 0: wren memory index
-
 User asks a question:
-  2. wren memory recall -q "<question>" --limit 3
-  3. wren memory fetch -q "<question>"
-  4. Write SQL using recalled examples + schema context
-  5. wren --sql "..."
+  1. Prefer wren graph query --question "..." --execute
+  2. If Graph is unavailable, optionally attempt ONE memory recall/fetch
+  3. Write and execute governed fallback SQL
 
 After execution:
-  6. Show results to user
-  7. Store by default → wren memory store --nl "..." --sql "..."
-     User says wrong → fix SQL, do NOT store
-     Query failed → do NOT store
-     Exploratory query → do NOT store (CLI auto-detects)
+  4. Show results to user
+  5. Do not store unless the user explicitly asks
+
+Memory command fails:
+  - Open the conversation-level circuit and use no more Memory commands
 ```
 
 ---

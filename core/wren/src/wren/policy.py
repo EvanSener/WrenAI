@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Iterable
 
-from sqlglot import exp, parse_one
+from sqlglot import exp, parse, parse_one
 from sqlglot.errors import SqlglotError
 
 from wren.config import WrenConfig
@@ -93,10 +93,45 @@ def validate_sql_policy(
     config:
         Wren configuration with strict_mode and denied_functions settings.
     """
+    if config.read_only:
+        _check_read_only(ast)
     if config.strict_mode:
         _check_tables(ast, model_names)
     if config.denied_functions:
         _check_functions(ast, config.denied_functions)
+
+
+def parse_single_read_only_statement(sql: str, dialect: str) -> exp.Expression:
+    """Parse exactly one SQL statement for the read-only policy path."""
+
+    try:
+        statements = [item for item in parse(sql, dialect=dialect) if item is not None]
+    except SqlglotError as exc:
+        raise WrenError(
+            ErrorCode.INVALID_SQL,
+            "SQL must be one parseable read-only query.",
+            phase=ErrorPhase.SQL_POLICY_CHECK,
+        ) from exc
+    if len(statements) != 1:
+        raise WrenError(
+            ErrorCode.SECURITY_POLICY_VIOLATION,
+            "Only one read-only SQL query is allowed.",
+            phase=ErrorPhase.SQL_POLICY_CHECK,
+        )
+    return statements[0]
+
+
+def _check_read_only(ast: exp.Expression) -> None:
+    if (
+        not isinstance(ast, exp.Query)
+        or next(ast.find_all(exp.Into), None) is not None
+        or next(ast.find_all(exp.Lock), None) is not None
+    ):
+        raise WrenError(
+            ErrorCode.SECURITY_POLICY_VIOLATION,
+            "Only side-effect-free SELECT queries are allowed.",
+            phase=ErrorPhase.SQL_POLICY_CHECK,
+        )
 
 
 def _visible_cte_names(node: exp.Expression) -> set[str]:

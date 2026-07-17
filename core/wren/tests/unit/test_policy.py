@@ -10,11 +10,45 @@ from sqlglot import exp, parse_one
 
 from wren.config import WrenConfig
 from wren.model.error import ErrorCode, WrenError
-from wren.policy import validate_sql_policy
+from wren.policy import parse_single_read_only_statement, validate_sql_policy
 
 pytestmark = pytest.mark.unit
 
 _MODELS = {"orders", "customers"}
+
+
+# ── Read-only validation ─────────────────────────────────────────────────
+
+
+def test_read_only_allows_select_query():
+    ast = parse_single_read_only_statement("SELECT * FROM orders", "duckdb")
+    validate_sql_policy(ast, _MODELS, WrenConfig(read_only=True))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DELETE FROM orders",
+        "DROP TABLE orders",
+        "SHOW TABLES",
+        "SELECT * INTO backup FROM orders",
+        "SELECT * FROM orders FOR UPDATE",
+    ],
+)
+def test_read_only_rejects_side_effecting_or_non_query_statements(sql):
+    ast = parse_single_read_only_statement(sql, "duckdb")
+    with pytest.raises(WrenError) as exc_info:
+        validate_sql_policy(ast, _MODELS, WrenConfig(read_only=True))
+    assert exc_info.value.error_code == ErrorCode.SECURITY_POLICY_VIOLATION
+
+
+def test_read_only_rejects_multiple_statements():
+    with pytest.raises(WrenError) as exc_info:
+        parse_single_read_only_statement(
+            "SELECT * FROM orders; DROP TABLE orders",
+            "duckdb",
+        )
+    assert exc_info.value.error_code == ErrorCode.SECURITY_POLICY_VIOLATION
 
 
 # ── Table validation ──────────────────────────────────────────────────────

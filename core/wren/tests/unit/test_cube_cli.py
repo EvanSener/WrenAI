@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from wren.cli import app
+from wren.model.error import ErrorCode, ErrorPhase, WrenError
 
 runner = CliRunner()
 
@@ -436,3 +438,48 @@ def test_cube_query_missing_required(tmp_path):
     )
     assert result.exit_code == 1
     assert "required" in result.output.lower()
+
+
+def test_cube_query_hides_multiline_engine_diagnostics_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mdl = _make_mdl(tmp_path)
+
+    class FakeEngine:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def query(self, _sql: str):
+            raise WrenError(
+                ErrorCode.INVALID_SQL,
+                "invalid cube SQL\nserver stack line\ninternal.Executor.java:9",
+                phase=ErrorPhase.SQL_EXECUTION,
+            )
+
+    monkeypatch.setattr(
+        "wren.cli._build_engine",
+        lambda *_args, **_kwargs: FakeEngine(),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "cube",
+            "query",
+            "--cube",
+            "order_metrics",
+            "--measures",
+            "revenue",
+            "--mdl",
+            str(mdl),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Error [INVALID_SQL]: invalid cube SQL" in result.stderr
+    assert "phase=SQL_EXECUTION" in result.stderr
+    assert "server stack line" not in result.stderr
+    assert "Executor.java" not in result.stderr

@@ -24,6 +24,7 @@ from wren.semantic_graph.binding_policy import (
     allowed_bindings,
     enforce_master_model,
     master_model,
+    source_equivalent_dimension_binding,
 )
 from wren.semantic_graph.model import GraphPlanningError
 
@@ -44,20 +45,32 @@ def resolve_dimension(
             f"dimension '{name}' is not defined",
             details={"dimension": name},
         )
-    candidates = allowed_bindings(
-        definition,
-        (item for item in state.dimension_bindings if item.get("dimension") == name),
-    )
+    all_bindings = [
+        item for item in state.dimension_bindings if item.get("dimension") == name
+    ]
+    candidates = allowed_bindings(definition, all_bindings)
     master = master_model(definition)
     requested_model = request.get("bindingModel")
+    source_equivalent = source_equivalent_dimension_binding(
+        definition,
+        all_bindings,
+        state.edges.values(),
+        source_model=source,
+    )
     if master:
         if requested_model:
-            enforce_master_model(
-                member_kind="dimension",
-                member_name=name,
-                definition=definition,
-                requested_model=requested_model,
-            )
+            if (
+                source_equivalent is not None
+                and requested_model == source_equivalent.get("model")
+            ):
+                candidates = [source_equivalent]
+            else:
+                enforce_master_model(
+                    member_kind="dimension",
+                    member_name=name,
+                    definition=definition,
+                    requested_model=requested_model,
+                )
     elif requested_model:
         candidates = [
             item for item in candidates if item.get("model") == requested_model
@@ -203,8 +216,13 @@ def resolve_dimension(
         "type": definition.get("type"),
         "path": [public_step(step) for step in path],
         "hops": len(path),
-        "routeDecision": request.get("_routeDecision")
-        or ("masterDataBinding" if master else "uniqueSafePath"),
+        "routeDecision": (
+            "sourceEquivalentMasterKey"
+            if source_equivalent is not None
+            and binding["model"] == source_equivalent.get("model")
+            else request.get("_routeDecision")
+            or ("masterDataBinding" if master else "uniqueSafePath")
+        ),
     }
 
 

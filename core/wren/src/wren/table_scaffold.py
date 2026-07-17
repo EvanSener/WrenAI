@@ -13,6 +13,7 @@ import yaml
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 _LATEST_PARTITION_COLUMN = "ds"
+_INCREMENTAL_TABLE_NAME_RE = re.compile(r"(?:^|_)(?:sp|sb|sd)_", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,32 @@ def validate_model_name(name: str) -> None:
         raise ValueError(f"model name must match [A-Za-z_][A-Za-z0-9_]*; got {name!r}")
 
 
+def infer_date_partition_type(table: IntrospectedTable) -> str | None:
+    """Infer the initial date-partition policy from physical table metadata.
+
+    Amazon Ads ``sp_``/``sb_``/``sd_`` name segments are an initialization
+    convention, not a runtime source of truth.  The heuristic is used only when
+    scaffolding metadata; an existing explicit ``date_partition_type`` wins
+    during refresh.  A source without a physical ``ds`` partition is never
+    fabricated as incremental merely because its name matches the convention.
+    """
+
+    partition_columns = [column for column in table.columns if column.is_partition]
+    has_date_partition = any(
+        column.name.casefold() == _LATEST_PARTITION_COLUMN
+        for column in partition_columns
+    )
+    if has_date_partition:
+        physical_name = table.physical_table.rsplit(".", 1)[-1].strip('`"')
+        if _INCREMENTAL_TABLE_NAME_RE.search(physical_name):
+            return "incremental"
+        return "snapshot"
+    if not partition_columns:
+        return "unpartitioned"
+    # A table partitioned by a non-ds key is outside the date-partition contract.
+    return None
+
+
 def model_metadata_from_table(
     table: IntrospectedTable,
     *,
@@ -57,6 +84,7 @@ def model_metadata_from_table(
     """Build a ``models/<name>/metadata.yml`` payload."""
     validate_model_name(model_name)
     partition_columns = [col for col in table.columns if col.is_partition]
+    date_partition_type = infer_date_partition_type(table)
     latest_partition_column = next(
         (
             col.name
@@ -74,14 +102,23 @@ def model_metadata_from_table(
         table_reference["catalog"] = table_catalog
     if table_schema:
         table_reference["schema"] = table_schema
+    if date_partition_type is not None:
+        table_reference["date_partition_type"] = date_partition_type
 
     columns: list[dict[str, Any]] = []
     for col in table.columns:
-        col_desc = _column_description(col, latest_partition_column)
+        col_desc = _column_description(
+            col,
+            latest_partition_column,
+            date_partition_type=date_partition_type,
+        )
         col_properties: dict[str, Any] = {"description": col_desc}
         if col.is_partition:
             col_properties["is_partition"] = True
-            if col.name == latest_partition_column:
+            if (
+                col.name == latest_partition_column
+                and date_partition_type == "snapshot"
+            ):
                 col_properties["partition_default"] = "max_pt"
         columns.append(
             {
@@ -194,6 +231,26 @@ def merge_existing_semantics(
     for name, existing_col in existing_cols.items():
         if name not in generated_names and _is_semantic_only_column(existing_col):
             merged_cols.append(deepcopy(existing_col))
+    merged_table_reference = merged.get("table_reference") or {}
+    partition_type = (
+        merged_table_reference.get("date_partition_type")
+        if isinstance(merged_table_reference, dict)
+        else None
+    )
+    if partition_type in {"snapshot", "incremental"}:
+        for column in merged_cols:
+            if (
+                not isinstance(column, dict)
+                or str(column.get("name") or "").casefold() != _LATEST_PARTITION_COLUMN
+            ):
+                continue
+            properties = column.get("properties")
+            if isinstance(properties, dict):
+                if partition_type == "incremental":
+                    properties.pop("partition_default", None)
+                    properties.pop("partitionDefault", None)
+                elif properties.get("is_partition") is True:
+                    properties["partition_default"] = "max_pt"
     merged["columns"] = merged_cols
     return merged
 
@@ -210,17 +267,21 @@ def _is_semantic_only_column(column: dict[str, Any]) -> bool:
 def _column_description(
     col: IntrospectedColumn,
     latest_partition_column: str | None,
+    *,
+    date_partition_type: str | None,
 ) -> str:
     if col.is_partition:
         description = col.comment or f"MaxCompute 分区字段 {col.name}。请补充业务含义。"
     else:
         description = col.comment or f"MaxCompute 字段 {col.name}。请补充业务含义。"
-    if (
-        col.is_partition
-        and col.name == latest_partition_column
-        and "默认查询最新分区" not in description
-    ):
-        description = f"{description.rstrip('。')}；未指定时默认查询最新分区。"
+    if col.is_partition and col.name == latest_partition_column:
+        if date_partition_type == "snapshot" and "默认查询最新分区" not in description:
+            description = f"{description.rstrip('。')}；未指定时默认查询最新分区。"
+        elif (
+            date_partition_type == "incremental"
+            and "必须明确单日或闭区间" not in description
+        ):
+            description = f"{description.rstrip('。')}；查询时必须明确单日或闭区间。"
     return description
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 import yaml
 from typer.testing import CliRunner
@@ -17,6 +18,7 @@ from wren.semantic_graph import (
     compile_graph_bundle,
     plan_virtual_cube,
 )
+from wren.semantic_graph.advanced_planner import plan_graph_query
 from wren.semantic_graph.queryability import build_queryability_index
 
 runner = CliRunner()
@@ -193,6 +195,91 @@ def test_compiler_and_planner_build_safe_master_data_sql(tmp_path: Path) -> None
     assert "LEFT JOIN `customers` AS g1" in plan["sql"]
     assert "g0.customer_id = g1.customer_id" in plan["sql"]
     assert "SUM(g0.amount) AS `revenue`" in plan["sql"]
+
+
+def test_graph_query_compiles_incremental_fact_and_snapshot_dimension_partitions(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    orders_path = project / "models" / "orders" / "metadata.yml"
+    orders = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    orders["table_reference"]["date_partition_type"] = "incremental"
+    next(column for column in orders["columns"] if column["name"] == "ds")[
+        "properties"
+    ]["is_partition"] = True
+    orders_path.write_text(yaml.safe_dump(orders, sort_keys=False), encoding="utf-8")
+
+    customers_path = project / "models" / "customers" / "metadata.yml"
+    customers = yaml.safe_load(customers_path.read_text(encoding="utf-8"))
+    customers["table_reference"]["date_partition_type"] = "snapshot"
+    customers["columns"].append(
+        {
+            "name": "ds",
+            "type": "STRING",
+            "properties": {
+                "is_partition": True,
+                "partition_default": "max_pt",
+            },
+        }
+    )
+    customers_path.write_text(
+        yaml.safe_dump(customers, sort_keys=False), encoding="utf-8"
+    )
+
+    bundle = compile_graph_bundle(project)
+    policies = {
+        node["name"]: node.get("partitionPolicy")
+        for node in bundle.semantic_graph["nodes"]
+    }
+    assert policies["orders"]["type"] == "incremental"
+    assert policies["customers"]["type"] == "snapshot"
+
+    with pytest.raises(GraphPlanningError) as caught:
+        plan_graph_query(
+            bundle.semantic_graph,
+            bundle.queryability_index,
+            {
+                "facts": [{"sourceModel": "orders", "metrics": ["revenue"]}],
+                "dimensions": ["customer"],
+            },
+        )
+    assert caught.value.code == "GRAPH_PARTITION_RANGE_REQUIRED"
+
+    plan = plan_graph_query(
+        bundle.semantic_graph,
+        bundle.queryability_index,
+        {
+            "dateRange": {"start": "20260101", "end": "20260131"},
+            "facts": [{"sourceModel": "orders", "metrics": ["revenue"]}],
+            "dimensions": ["customer"],
+        },
+    )
+    sql = plan["sql"]
+    assert (
+        "FROM (SELECT * FROM `orders` WHERE ds BETWEEN '20260101' AND '20260131') AS s"
+        in sql
+    )
+    assert "(SELECT * FROM `customers` WHERE ds = MAX_PT('customers')) AS j0" in sql
+    assert "orders')" not in sql
+    fact = plan["relationalPlan"]["facts"][0]
+    assert fact["relationPartitions"]["orders"]["mode"] == "closed_range"
+    assert fact["relationPartitions"]["customers"]["mode"] == "latest"
+
+    per_fact_plan = plan_graph_query(
+        bundle.semantic_graph,
+        bundle.queryability_index,
+        {
+            "facts": [
+                {
+                    "sourceModel": "orders",
+                    "metrics": ["revenue"],
+                    "dateRange": {"start": "20260201", "end": "20260201"},
+                }
+            ],
+            "dimensions": ["customer"],
+        },
+    )
+    assert "orders` WHERE ds = '20260201'" in per_fact_plan["sql"]
 
 
 def test_definition_master_models_mark_bindings_and_filter_queryability(
@@ -604,6 +691,125 @@ def test_graph_cli_build_explain_and_query(tmp_path: Path) -> None:
     )
     assert queried.exit_code == 0, queried.output
     assert "LEFT JOIN `customers` AS g1" in queried.output
+
+
+def test_graph_cli_query_execute_uses_same_plan_and_project_mdl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    built = runner.invoke(app, ["graph", "build", "--path", str(project)])
+    assert built.exit_code == 0, built.output
+
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def query(self, sql: str, *, limit: int | None = None):
+            captured["sql"] = sql
+            captured["limit"] = limit
+            return pa.table({"revenue": [42]})
+
+    def fake_build_engine(
+        mdl, connection_info, connection_file, *, verbose_errors=False
+    ):
+        captured["mdl"] = mdl
+        captured["connection_info"] = connection_info
+        captured["connection_file"] = connection_file
+        captured["verbose_errors"] = verbose_errors
+        return FakeEngine()
+
+    monkeypatch.setattr("wren.cli._build_engine", fake_build_engine)
+    executed = runner.invoke(
+        app,
+        [
+            "graph",
+            "query",
+            "--path",
+            str(project),
+            "--source",
+            "orders",
+            "--metrics",
+            "revenue",
+            "--dimensions",
+            "customer,ds",
+            "--execute",
+            "--result-output",
+            "json",
+            "--limit",
+            "7",
+        ],
+    )
+
+    assert executed.exit_code == 0, executed.output
+    assert '"revenue":42' in executed.output
+    assert captured["mdl"] == str(project / "target" / "mdl.json")
+    assert captured["limit"] == 7
+    assert captured["verbose_errors"] is False
+    assert "LEFT JOIN `customers` AS g1" in str(captured["sql"])
+
+
+def test_graph_cli_query_execute_resolves_recent_days_from_latest_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    orders_path = project / "models" / "orders" / "metadata.yml"
+    orders = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    orders["table_reference"]["date_partition_type"] = "incremental"
+    next(column for column in orders["columns"] if column["name"] == "ds")[
+        "properties"
+    ]["is_partition"] = True
+    orders_path.write_text(yaml.safe_dump(orders, sort_keys=False), encoding="utf-8")
+    built = runner.invoke(app, ["graph", "build", "--path", str(project)])
+    assert built.exit_code == 0, built.output
+
+    captured_sql: list[str] = []
+
+    class FakeEngine:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def query(self, sql: str, *, limit: int | None = None):
+            captured_sql.append(sql)
+            if "MAX_PT" in sql.upper():
+                return pa.table({"max_ds": ["20260717"]})
+            assert limit == 7
+            return pa.table({"customer": ["c1"], "revenue": [42]})
+
+    monkeypatch.setattr(
+        "wren.cli._build_engine",
+        lambda *_args, **_kwargs: FakeEngine(),
+    )
+    executed = runner.invoke(
+        app,
+        [
+            "graph",
+            "query",
+            "--path",
+            str(project),
+            "--question",
+            "最近15天按客户统计销售额",
+            "--execute",
+            "--result-output",
+            "json",
+            "--limit",
+            "7",
+        ],
+    )
+
+    assert executed.exit_code == 0, executed.output
+    assert '"revenue":42' in executed.output
+    assert len(captured_sql) == 2
+    assert captured_sql[0] == "SELECT MAX_PT('orders') AS max_ds"
+    assert "orders` WHERE ds BETWEEN '20260703' AND '20260717'" in captured_sql[1]
+    assert "JOIN `customers`" not in captured_sql[1]
 
 
 def test_graph_ontology_and_inspection_cli(tmp_path: Path) -> None:

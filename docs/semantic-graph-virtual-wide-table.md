@@ -307,10 +307,13 @@ master_model: dim_marketplace
 
 它只裁决 Graph Query 的多 Binding 冲突，不创建边，也不会进入旧 Cube/MDL。
 Graph Compiler 仍保留全部兼容 Binding 作为血缘，但只把权威 Binding 标记为
-`isMaster: true` 并放入 Queryability。权威模型必须是图节点，而且必须包含表达式
-展开后的全部原子字段；不存在或字段不全时构建失败。自然语言、结构化 Planner、
-计算指标和 Explain 共用同一规则，显式指定非权威模型会返回
-`GRAPH_MASTER_DATA_OVERRIDE_FORBIDDEN`。
+`isMaster: true`。权威模型必须是图节点，而且必须包含表达式展开后的全部原子
+字段；不存在或字段不全时构建失败。自然语言、结构化 Planner、计算指标和 Explain
+共用同一规则，显式指定非权威模型通常返回
+`GRAPH_MASTER_DATA_OVERRIDE_FORBIDDEN`。Dimension 有一个受控例外：若事实本地
+Binding 的全部原子字段被安全关系的 `conditionColumns` 证明为同一主数据关系键，
+Planner 可直接投影该本地键并在 Explain 标记 `sourceEquivalentMasterKey`；描述性
+属性仍必须使用权威 Binding。
 
 旧的 `relationships.yml > graph > master_data.attributes` 继续作为 Dimension
 兼容入口；新旧位置同时配置且值不同会返回 `GRAPH_MASTER_MODEL_CONFLICT`。

@@ -10,6 +10,7 @@ from sqlglot import exp, parse
 from sqlglot.errors import SqlglotError
 
 from wren.connector.base import ConnectorABC
+from wren.maxcompute_partition import MaxComputePartitionRegistry
 from wren.model import MaxComputeConnectionInfo
 from wren.model.error import DIALECT_SQL, ErrorCode, ErrorPhase, WrenError
 
@@ -81,7 +82,9 @@ def _scope_tables(select: exp.Select) -> list[exp.Table]:
     from_ = select.args.get("from_")
     if from_:
         from_sources = [from_.this, *from_.expressions]
-        tables.extend(source for source in from_sources if isinstance(source, exp.Table))
+        tables.extend(
+            source for source in from_sources if isinstance(source, exp.Table)
+        )
     for join in select.args.get("joins") or []:
         source = join.this
         if isinstance(source, exp.Table):
@@ -173,7 +176,11 @@ def _append_where(select: exp.Select, predicate: exp.Expression) -> None:
         select.set("where", exp.Where(this=predicate))
 
 
-def _apply_latest_partition_filter(sql: str) -> str:
+def _apply_latest_partition_filter(
+    sql: str,
+    *,
+    skip_tables: frozenset[str] | set[str] | None = None,
+) -> str:
     """Add ``ds = max_pt('<table>')`` for MaxCompute tables missing ds filters."""
     try:
         expressions = parse(sql, read="hive")
@@ -193,6 +200,7 @@ def _apply_latest_partition_filter(sql: str) -> str:
         return sql
 
     cte_names = _collect_cte_names(expression)
+    skipped = {name.casefold() for name in (skip_tables or ())}
     changed = False
     for select in expression.find_all(exp.Select):
         tables = [
@@ -204,6 +212,9 @@ def _apply_latest_partition_filter(sql: str) -> str:
             continue
         scope_table_count = len(tables)
         for table in tables:
+            identifier = _table_identifier(table).casefold()
+            if identifier in skipped or table.name.casefold() in skipped:
+                continue
             if _has_explicit_partition_filter(
                 select,
                 table,
@@ -251,7 +262,12 @@ def _is_timeout_error(error: Exception) -> bool:
 
 
 class MaxComputeConnector(ConnectorABC):
-    def __init__(self, connection_info: MaxComputeConnectionInfo):
+    def __init__(
+        self,
+        connection_info: MaxComputeConnectionInfo,
+        *,
+        partition_registry: MaxComputePartitionRegistry | None = None,
+    ):
         try:
             from odps import ODPS, options  # noqa: PLC0415
         except ImportError as e:
@@ -262,6 +278,7 @@ class MaxComputeConnector(ConnectorABC):
             ) from e
 
         self.connection_info = connection_info
+        self.partition_registry = partition_registry
         self._options = options
 
         self.connection = ODPS(
@@ -329,7 +346,14 @@ class MaxComputeConnector(ConnectorABC):
     def query(self, sql: str, limit: int | None = None) -> pa.Table:
         if self.connection_info.enforce_read_only:
             _ensure_read_only_select(sql)
-        sql = _apply_latest_partition_filter(sql)
+        sql = _apply_latest_partition_filter(
+            sql,
+            skip_tables=(
+                self.partition_registry.managed_physical_tables
+                if self.partition_registry is not None
+                else None
+            ),
+        )
         statement = _wrap_with_limit(
             sql,
             _effective_limit(limit, self.connection_info.max_rows),
@@ -352,7 +376,14 @@ class MaxComputeConnector(ConnectorABC):
     def dry_run(self, sql: str) -> None:
         if self.connection_info.enforce_read_only:
             _ensure_read_only_select(sql)
-        sql = _apply_latest_partition_filter(sql)
+        sql = _apply_latest_partition_filter(
+            sql,
+            skip_tables=(
+                self.partition_registry.managed_physical_tables
+                if self.partition_registry is not None
+                else None
+            ),
+        )
         statement = _wrap_with_limit(sql, 0)
         try:
             self._execute_sql(statement, phase=ErrorPhase.SQL_DRY_RUN)
@@ -379,5 +410,12 @@ class MaxComputeConnector(ConnectorABC):
             self.connection = None
 
 
-def create_connector(connection_info) -> MaxComputeConnector:
-    return MaxComputeConnector(connection_info)
+def create_connector(
+    connection_info,
+    *,
+    partition_registry: MaxComputePartitionRegistry | None = None,
+) -> MaxComputeConnector:
+    return MaxComputeConnector(
+        connection_info,
+        partition_registry=partition_registry,
+    )

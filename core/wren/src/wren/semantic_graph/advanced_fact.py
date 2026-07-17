@@ -6,6 +6,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Any
 
+from wren.semantic_graph.advanced_bridge import normalized_bridge_policy
 from wren.semantic_graph.advanced_dimensions import (
     resolve_attribute,
     resolve_dimension,
@@ -19,6 +20,7 @@ from wren.semantic_graph.advanced_member_routes import (
 from wren.semantic_graph.advanced_metrics import plan_metric, validate_metric_policies
 from wren.semantic_graph.advanced_types import GraphState
 from wren.semantic_graph.model import GraphPlanningError
+from wren.semantic_graph.partition import plan_relation_partitions
 from wren.semantic_graph.planner import plan_virtual_cube
 
 
@@ -147,7 +149,21 @@ def plan_fact(
             source_model=source,
             metrics=[metric["name"] for metric in metrics],
             dimensions=[dimension["name"] for dimension in dimension_plans],
+            date_range=fact.get("dateRange"),
         )
+
+    relation_models = {source}
+    for member in (*dimension_plans, *metrics):
+        for step in member_steps(member):
+            relation_models.update((step["from"], step["to"]))
+            if step.get("traversal") == "BRIDGE":
+                relation_models.add(normalized_bridge_policy(state, step)["model"])
+    relation_partitions = plan_relation_partitions(
+        state.nodes,
+        relation_models,
+        date_range=fact.get("dateRange"),
+        source_model=source,
+    )
 
     source_keys = source_grain_fields(node)
     if fanout and not source_keys:
@@ -168,6 +184,8 @@ def plan_fact(
         "sourceModel": source,
         "sourceGrain": deepcopy(node.get("grain")),
         "sourceKeys": source_keys,
+        "dateRange": deepcopy(fact.get("dateRange")),
+        "relationPartitions": relation_partitions,
         "metrics": metrics,
         "dimensions": dimension_plans,
         "entityGrain": entity_plans,
@@ -363,6 +381,8 @@ def public_fact_plan(fact: dict[str, Any]) -> dict[str, Any]:
         "sourceModel": fact["sourceModel"],
         "sourceGrain": deepcopy(fact["sourceGrain"]),
         "sourceKeys": list(fact["sourceKeys"]),
+        "dateRange": deepcopy(fact.get("dateRange")),
+        "relationPartitions": deepcopy(fact.get("relationPartitions") or {}),
         "strategy": fact["strategy"],
         "metrics": deepcopy(fact["metrics"]),
         "dimensions": deepcopy(fact["dimensions"]),

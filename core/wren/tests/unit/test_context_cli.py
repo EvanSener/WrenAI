@@ -12,7 +12,14 @@ from typer.testing import CliRunner
 
 import wren.profile as profile_mod
 from wren.cli import app
-from wren.table_scaffold import default_model_name
+from wren.table_scaffold import (
+    IntrospectedColumn,
+    IntrospectedTable,
+    default_model_name,
+    infer_date_partition_type,
+    merge_existing_semantics,
+    model_metadata_from_table,
+)
 
 runner = CliRunner()
 
@@ -614,6 +621,7 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
     assert metadata["table_reference"] == {
         "table": "dws_tenant_order_df",
         "description": "租户订单每日汇总",
+        "date_partition_type": "snapshot",
     }
     assert [col["name"] for col in metadata["columns"]] == [
         "tenant_id",
@@ -634,6 +642,87 @@ def test_add_table_scaffolds_maxcompute_model(tmp_path, monkeypatch):
         "is_partition": True,
         "partition_default": "max_pt",
     }
+
+
+def test_date_partition_initialization_uses_ad_name_segments_only_with_ds():
+    ds = IntrospectedColumn("ds", "STRING", is_partition=True)
+
+    for table_name in (
+        "dws_mkt_sp_campaign_df_v",
+        "dws_mkt_sb_campaign_df_v",
+        "dws_mkt_sd_campaign_df_v",
+        "schema.DWS_MKT_SP_CAMPAIGN_DF_V",
+    ):
+        assert (
+            infer_date_partition_type(IntrospectedTable(table_name, [ds]))
+            == "incremental"
+        )
+
+    assert (
+        infer_date_partition_type(IntrospectedTable("dws_mkt_campaign_df_v", [ds]))
+        == "snapshot"
+    )
+    assert (
+        infer_date_partition_type(
+            IntrospectedTable(
+                "dws_mkt_sb_search_product_df_v",
+                [IntrospectedColumn("id", "STRING")],
+            )
+        )
+        == "unpartitioned"
+    )
+
+
+def test_add_table_initializes_sp_model_as_incremental(tmp_path, monkeypatch):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "add-table",
+            "dws_mkt_sp_advertised_product_df_v",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = yaml.safe_load(
+        (
+            tmp_path / "models" / "dws_mkt_sp_advertised_product_df_v" / "metadata.yml"
+        ).read_text()
+    )
+    assert metadata["table_reference"]["date_partition_type"] == "incremental"
+    ds_column = next(column for column in metadata["columns"] if column["name"] == "ds")
+    assert ds_column["properties"]["is_partition"] is True
+    assert "partition_default" not in ds_column["properties"]
+    assert "必须明确单日或闭区间" in ds_column["properties"]["description"]
+
+
+def test_explicit_partition_type_wins_over_name_initialization():
+    table = IntrospectedTable(
+        "dws_mkt_sp_campaign_df_v",
+        [IntrospectedColumn("ds", "STRING", is_partition=True)],
+    )
+    generated = model_metadata_from_table(
+        table,
+        model_name="dws_mkt_sp_campaign_df_v",
+    )
+    existing = {
+        **generated,
+        "table_reference": {
+            **generated["table_reference"],
+            "date_partition_type": "snapshot",
+        },
+    }
+
+    merged = merge_existing_semantics(generated, existing)
+
+    assert merged["table_reference"]["date_partition_type"] == "snapshot"
+    ds_column = next(column for column in merged["columns"] if column["name"] == "ds")
+    assert ds_column["properties"]["partition_default"] == "max_pt"
 
 
 def test_add_table_refuses_existing_model_without_force(tmp_path, monkeypatch):
@@ -717,6 +806,49 @@ def test_add_table_force_preserves_existing_descriptions(tmp_path, monkeypatch):
     assert by_name["ds"]["properties"]["is_row_unique_id"] is True
     assert by_name["ds"]["properties"]["is_partition"] is True
     assert by_name["ds"]["properties"]["partition_default"] == "max_pt"
+
+
+def test_add_table_force_preserves_incremental_policy_without_default(
+    tmp_path, monkeypatch
+):
+    _install_fake_odps(monkeypatch)
+    _make_maxcompute_project(tmp_path, monkeypatch)
+    model_dir = tmp_path / "models" / "dws_tenant_order_df"
+    model_dir.mkdir(parents=True)
+    (model_dir / "metadata.yml").write_text(
+        "name: dws_tenant_order_df\n"
+        "table_reference:\n"
+        "  table: dws_tenant_order_df\n"
+        "  date_partition_type: incremental\n"
+        "columns:\n"
+        "- name: tenant_id\n"
+        "  type: STRING\n"
+        "  properties: {}\n"
+        "- name: ds\n"
+        "  type: STRING\n"
+        "  properties:\n"
+        "    is_partition: true\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "context",
+            "add-table",
+            "dws_tenant_order_df",
+            "--path",
+            str(tmp_path),
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    metadata = yaml.safe_load((model_dir / "metadata.yml").read_text())
+    assert metadata["table_reference"]["date_partition_type"] == "incremental"
+    ds = next(column for column in metadata["columns"] if column["name"] == "ds")
+    assert ds["properties"]["is_partition"] is True
+    assert "partition_default" not in ds["properties"]
 
 
 def test_add_table_force_migrates_existing_unique_identifier_columns_to_columns(
@@ -1022,6 +1154,45 @@ def test_instructions_discovers_project(tmp_path):
     result = runner.invoke(app, ["context", "instructions", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "custom rule here" in result.output
+
+
+def test_instructions_compact_only_summarizes_large_markdown_tables(tmp_path):
+    _make_valid_project(tmp_path)
+    rules_dir = tmp_path / "knowledge" / "rules"
+    rules_dir.mkdir(parents=True)
+    large_rows = "\n".join(f"| rel_{index} | MANY_TO_ONE |" for index in range(20))
+    (rules_dir / "graph-audit.md").write_text(
+        "# Join rules\n\n"
+        "Always use governed relationships.\n\n"
+        "| type | meaning |\n"
+        "| --- | --- |\n"
+        "| M:1 | safe dimension path |\n\n"
+        "```text\n"
+        f"{large_rows}\n"
+        "```\n\n"
+        "## Audit details\n\n"
+        "| relationship | cardinality |\n"
+        "| --- | --- |\n"
+        f"{large_rows}\n",
+        encoding="utf-8",
+    )
+
+    full = runner.invoke(app, ["context", "instructions", "--path", str(tmp_path)])
+    compact = runner.invoke(
+        app,
+        ["context", "instructions", "--path", str(tmp_path), "--compact"],
+    )
+
+    assert full.exit_code == 0, full.output
+    assert compact.exit_code == 0, compact.output
+    assert full.output.count("rel_19") == 2
+    assert "Always use governed relationships." in compact.output
+    assert "| M:1 | safe dimension path |" in compact.output
+    assert "```text" in compact.output
+    assert compact.output.count("rel_19") == 1
+    assert "Omitted 20 table rows" in compact.output
+    assert "relationship, cardinality" in compact.output
+    assert len(compact.output) < len(full.output)
 
 
 # ── wren context upgrade ─────────────────────────────────────────────────

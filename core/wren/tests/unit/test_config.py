@@ -17,6 +17,7 @@ def test_load_config_no_file(tmp_path):
     assert config == WrenConfig()
     assert config.strict_mode is False
     assert config.denied_functions == frozenset()
+    assert config.read_only is False
 
 
 def test_load_config_strict_enabled(tmp_path):
@@ -35,6 +36,12 @@ def test_load_config_with_denied_functions(tmp_path):
     config = load_config(tmp_path)
     assert config.strict_mode is True
     assert config.denied_functions == frozenset(["pg_read_file", "dblink", "lo_import"])
+
+
+def test_load_config_read_only(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"read_only": True}))
+    config = load_config(tmp_path)
+    assert config.read_only is True
 
 
 def test_load_config_function_names_lowercased(tmp_path):
@@ -93,6 +100,12 @@ def test_load_config_strict_mode_string_rejected(tmp_path):
 
 def test_load_config_strict_mode_int_rejected(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({"strict_mode": 1}))
+    with pytest.raises(WrenError):
+        load_config(tmp_path)
+
+
+def test_load_config_read_only_string_rejected(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"read_only": "true"}))
     with pytest.raises(WrenError):
         load_config(tmp_path)
 

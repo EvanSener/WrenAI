@@ -10,6 +10,8 @@ from __future__ import annotations
 import typer
 
 from wren import ask as _ask
+from wren.model.error import WrenError
+from wren.security import discover_security_project, enforce_business_question
 
 
 def ask(
@@ -38,5 +40,14 @@ def ask(
             err=True,
         )
         raise typer.Exit(2)
+    try:
+        enforce_business_question(
+            prompt,
+            project_path=discover_security_project(),
+            entrypoint="ask",
+        )
+    except WrenError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
     mode = "guided" if guided else "direct"
     typer.echo(_ask.render(mode, prompt))

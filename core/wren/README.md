@@ -129,6 +129,7 @@ wren graph build
 wren graph resolve "revenue by customer region" --output json
 wren graph explain --question "revenue by customer region" --output json
 wren graph query --question "revenue by customer region"
+wren graph query --question "revenue by customer region" --execute --result-output json
 wren graph discover --anchor orders
 wren graph explain --request graph_queries/orders.yml --output json
 wren graph query --request graph_queries/orders.yml
@@ -144,12 +145,20 @@ missing Grain, implicit 1:M, and ungoverned M:N fail closed. An explicit
 `fanoutMode: repeat` acknowledges that a fact may repeat across child members
 and is not additive across that dimension. This graph workflow is additive
 and does not change `wren context build`, Cube compilation, or MDL execution.
-`wren graph query` compiles SQL only and does not execute it.
+`wren graph query` compiles SQL only by default. `--execute` runs the exact plan
+through WrenEngine and the configured connector, including model-aware
+MaxCompute snapshot/incremental/unpartitioned policy, read-only, limit, and
+timeout enforcement. Incremental facts accept an explicit `dateRange` with
+8-digit `yyyyMMdd` boundaries; `--execute` also resolves `最近/过去 N 天` and
+`last/past N days` from the selected fact's latest available partition.
 
 When a global Metric or Dimension can bind to several nodes, its
 `metrics/*/metadata.yml` or `dimensions/*/metadata.yml` may set an optional
 `master_model`. Graph compilation validates that source and restricts graph
 planning to its binding; compatible alternatives remain visible for lineage.
+For a Dimension only, a source-local Binding may be projected without a Join
+when a safe relationship proves that it is exactly the master's relationship
+key; descriptive attributes remain pinned to the master.
 The field is graph-only, creates no edge, and is stripped from legacy Cube MDL.
 See the [semantic graph design](../../docs/semantic-graph-virtual-wide-table.md).
 
@@ -158,6 +167,7 @@ See the [semantic graph design](../../docs/semantic-graph-virtual-wide-table.md)
 ```json
 {
   "strict_mode": true,
+  "read_only": true,
   "denied_functions": ["pg_read_file", "dblink", "lo_import"]
 }
 ```
@@ -165,7 +175,35 @@ See the [semantic graph design](../../docs/semantic-graph-virtual-wide-table.md)
 | Key | Default | Description |
 |-----|---------|-------------|
 | `strict_mode` | `false` | When `true`, every table in a query must be defined in the MDL. Queries referencing undeclared tables are rejected before execution. |
+| `read_only` | `false` | When `true`, only one side-effect-free query statement is accepted; DDL, DML, session commands, `SELECT INTO`, and multi-statement SQL are rejected. |
 | `denied_functions` | `[]` | List of function names (case-insensitive) that are forbidden in queries. |
+
+需要把 Agent 限定为“只回答业务数据问题”时，在项目自己的
+`wren_project.yml` 中启用更严格的项目策略：
+
+```yaml
+security:
+  enabled: true
+  business_data_only: true
+  prompt_injection_guard: true
+  require_mdl_tables: true
+  read_only: true
+  audit_log: .wren/audit/security.jsonl
+  denied_functions: [pg_read_file, dblink, read_csv, shell, system, exec, eval]
+```
+
+推荐把审计事件写入项目内的 `.wren/audit/security.jsonl`。它使用 Wren 进程内的
+本地 JSONL 写入，不依赖独立服务；未配置 `audit_log` 的既有项目仍沿用
+`~/.wren/audit/<project>-security.jsonl`。审计写入失败会告警，但不会把正常业务
+查询误判为安全违规，确定性自然语言策略、SQL AST、MDL 白名单和只读连接约束仍
+照常执行。
+
+该策略在 Ask、Graph、Cube 和 Memory 的自然语言入口先拒绝明显的 Prompt 注入、
+凭据/内部信息套取、语义层绕过和高风险执行请求；随后在统一 Engine 中强制单语句
+只读、MDL Model/View 白名单，以及内置危险函数基线、全局配置和项目配置三者的
+函数拒绝并集。显式连接参数不能降低项目策略。
+审计日志只保存入口、决策、分类、长度、SHA-256 和哈希链，不保存原始问题、SQL
+或凭据。未配置 `security` 的旧项目保持原行为。
 
 **6. (Optional) Index schema for semantic search** (requires `wrenai[memory]`):
 

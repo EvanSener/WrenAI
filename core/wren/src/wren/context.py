@@ -16,6 +16,7 @@ from wren.dimension_compiler import (
     compile_cube_dimensions,
     load_dimensions,
 )
+from wren.maxcompute_partition import validate_date_partition_model
 from wren.metric_compiler import (
     analyze_cube_metrics,
     compile_cube_metrics,
@@ -35,15 +36,28 @@ This project uses [Wren Engine](https://github.com/Canner/WrenAI) as the semanti
 
 ## Answering data questions
 
-When the user asks about data, metrics, reports, or business questions, follow this workflow:
+Keep ordinary questions to 1–3 Wren commands after resolving this project:
 
-1. `wren memory fetch -q "<question>"` — get relevant schema context
-2. `wren memory recall -q "<question>" --limit 3` — find similar past queries
-3. Write SQL using model names from the MDL (not raw table names)
-4. `wren --sql "<sql>"` — execute through the semantic layer
-5. `wren memory store --nl "<question>" --sql "<sql>"` — store confirmed results
+1. On the first question in a session, run `wren context instructions --compact`
+   once and reuse the rules.
+2. When `target/semantic_graph.json` exists, run
+   `wren graph query --question "<question>" --execute --result-output json`.
+   This resolves governed members and paths, generates one SQL statement and
+   executes it without Agent-side copying or rewriting.
+3. If Graph artifacts are absent, use at most one context, Memory, or Cube
+   discovery command, then execute one governed Cube or MDL SQL query.
 
-If this is the first query in the session, also run `wren context instructions` to load business rules.
+A user question has at most two candidate answer attempts across the Agent,
+tools, and delegated Agents. Use the second only for one deterministic correction
+supported by the first concise error and existing metadata. Missing date/business
+scope, ambiguous members/paths, security/permission rejection, or an unavailable
+service requires a concise user clarification or failure report, not another
+guess. After attempt two fails, stop and request the exact missing information;
+never launch a third SQL or diagnostic subquery.
+
+Do not store successful queries unless the user explicitly asks to save one.
+After the first Wren Memory failure in a conversation, do not call Memory again;
+continue through Graph, Cube, context, or governed MDL SQL.
 
 ## Modifying the data model
 
@@ -72,7 +86,7 @@ they expose; build validates every atomic source field.
 
 ## Capturing business context
 
-Rules the schema can't express — canonical tables, default filters, units, enum meanings — go in `knowledge/rules/*.md` (read by `wren context instructions`). Confirmed NL→SQL examples are saved with `wren memory store` (step 5 above), which writes them to `knowledge/sql/`. Both live in the project and are committed with it.
+Rules the schema can't express — canonical tables, default filters, units, enum meanings — go in `knowledge/rules/*.md` (read compactly by `wren context instructions --compact`; omit `--compact` for exact audit-table details). Confirmed NL→SQL examples are saved with `wren memory store` only on explicit request, which writes them to `knowledge/sql/`. Both live in the project and are committed with it.
 
 ## Prerequisites
 
@@ -90,8 +104,10 @@ See https://docs.getwren.ai/oss/engine/get_started/installation for full setup.
 
 | Task | Command |
 |------|---------|
-| Run a query | `wren --sql "SELECT ..."` |
+| Run a Graph question | `wren graph query --question "..." --execute --result-output json` |
+| Run fallback MDL SQL | `wren query --sql "SELECT ..." --quiet` |
 | Preview planned SQL | `wren dry-plan --sql "SELECT ..."` |
+| Load compact business rules | `wren context instructions --compact` |
 | Show available models | `wren context show` |
 | Check connection | `wren profile debug` |
 | Check memory index | `wren memory status` |
@@ -785,6 +801,81 @@ def load_rules(project_path: Path) -> tuple[str | None, bool]:
     return content, used_legacy
 
 
+def compact_rules_for_agent(content: str, *, table_row_limit: int = 12) -> str:
+    """Remove large Markdown table bodies from rules loaded by an agent.
+
+    Large audit tables are useful for human review but expensive and usually
+    irrelevant to an ordinary data question.  Compact mode keeps all prose,
+    headings, lists and small business-mapping tables unchanged.  Only a valid
+    Markdown table with more than ``table_row_limit`` data rows is replaced by
+    a deterministic summary that preserves its column names and row count.
+
+    The full source remains available through ``context instructions`` without
+    ``--compact``; this helper therefore does not mutate project knowledge or
+    change the default CLI output.
+    """
+
+    def _is_table_row(line: str) -> bool:
+        stripped = line.strip()
+        return (
+            stripped.startswith("|")
+            and stripped.endswith("|")
+            and stripped.count("|") >= 3
+        )
+
+    def _is_separator_row(line: str) -> bool:
+        if not _is_table_row(line):
+            return False
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        return bool(cells) and all(
+            re.fullmatch(r":?-{3,}:?", cell) is not None for cell in cells
+        )
+
+    lines = content.splitlines()
+    compacted: list[str] = []
+    index = 0
+    fence_marker: str | None = None
+    while index < len(lines):
+        stripped = lines[index].lstrip()
+        if fence_marker is not None:
+            compacted.append(lines[index])
+            if stripped.startswith(fence_marker):
+                fence_marker = None
+            index += 1
+            continue
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fence_marker = stripped[:3]
+            compacted.append(lines[index])
+            index += 1
+            continue
+        if (
+            index + 1 < len(lines)
+            and _is_table_row(lines[index])
+            and _is_separator_row(lines[index + 1])
+        ):
+            end = index + 2
+            while end < len(lines) and _is_table_row(lines[end]):
+                end += 1
+            row_count = end - (index + 2)
+            if row_count > table_row_limit:
+                columns = [
+                    cell.strip() for cell in lines[index].strip().strip("|").split("|")
+                ]
+                compacted.append(
+                    "> [Wren compact] Omitted "
+                    f"{row_count} table rows (columns: {', '.join(columns)}). "
+                    "Run without --compact only when exact row-level evidence is "
+                    "required."
+                )
+            else:
+                compacted.extend(lines[index:end])
+            index = end
+            continue
+        compacted.append(lines[index])
+        index += 1
+    return "\n".join(compacted).strip()
+
+
 def load_knowledge_config(project_path: Path) -> dict:
     """Load knowledge/knowledge.yml (knowledge version axis). Empty dict if absent."""
     kfile = project_path / _KNOWLEDGE_CONFIG_FILE
@@ -967,6 +1058,22 @@ def validate_project(project_path: Path) -> list[ValidationError]:
     if any(e.path == PROJECT_FILE and "schema_version" in e.message for e in errors):
         return errors
 
+    # Project security is optional, but an enabled/misspelled policy must fail
+    # validation instead of silently giving operators a false sense of safety.
+    try:
+        from wren.model.error import WrenError  # noqa: PLC0415
+        from wren.security import load_project_security  # noqa: PLC0415
+
+        load_project_security(project_path)
+    except (OSError, WrenError) as exc:
+        errors.append(
+            ValidationError(
+                "error",
+                f"{PROJECT_FILE} > security",
+                str(exc),
+            )
+        )
+
     # knowledge/ version axis — independent of the MDL schema_version above.
     if (project_path / "knowledge").is_dir():
         try:
@@ -1128,6 +1235,16 @@ def validate_project(project_path: Path) -> list[ValidationError]:
                         "error",
                         f"{src_path} > {name}",
                         f"primary_key '{pk_col}' not found in columns",
+                    )
+                )
+
+        if has_tref:
+            for message in validate_date_partition_model(model):
+                errors.append(
+                    ValidationError(
+                        "error",
+                        f"{src_path} > {name} > table_reference.date_partition_type",
+                        message,
                     )
                 )
 

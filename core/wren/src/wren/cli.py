@@ -17,6 +17,14 @@ _WREN_HOME = Path(os.environ.get("WREN_HOME", str(Path.home() / ".wren"))).expan
 _DEFAULT_CONN = _WREN_HOME / "connection_info.json"
 
 
+def _echo_cli_error(exc: BaseException, *, verbose: bool = False) -> None:
+    """Render one bounded CLI error without importing Graph CLI registration."""
+
+    from wren.graph_observability import echo_cli_error  # noqa: PLC0415
+
+    echo_cli_error(exc, verbose=verbose)
+
+
 # ── File discovery helpers ─────────────────────────────────────────────────
 
 
@@ -194,6 +202,29 @@ def _resolve_datasource(conn_dict: dict, explicit: str | None = None) -> str:
     raise typer.Exit(1)
 
 
+def _load_engine_security(mdl: str | None):
+    """Load global config and merge any discovered project security policy."""
+
+    from wren.config import load_config  # noqa: PLC0415
+    from wren.security import (  # noqa: PLC0415
+        load_project_security,
+        merge_engine_config,
+    )
+
+    project_path = _discover_project_for_engine(mdl)
+    policy = load_project_security(project_path)
+    return merge_engine_config(load_config(_WREN_HOME), policy), policy
+
+
+def _secure_connection_info(ds, connection: dict, policy) -> dict:
+    """Prevent explicit connector flags from weakening project policy."""
+
+    secured = dict(connection)
+    if policy.enabled and policy.read_only and ds.value == "maxcompute":
+        secured["enforce_read_only"] = True
+    return secured
+
+
 def _build_engine(
     mdl: str | None,
     connection_info: str | None,
@@ -201,13 +232,18 @@ def _build_engine(
     *,
     conn_required: bool = True,
     datasource: str | None = None,
+    verbose_errors: bool = False,
 ):
-    from wren.config import load_config  # noqa: PLC0415
     from wren.engine import WrenEngine  # noqa: PLC0415
     from wren.model.data_source import DataSource  # noqa: PLC0415
     from wren.model.error import WrenError  # noqa: PLC0415
 
     manifest_str = _load_manifest(_require_mdl(mdl))
+    try:
+        config, security_policy = _load_engine_security(mdl)
+    except (WrenError, OSError) as e:
+        _echo_cli_error(e, verbose=verbose_errors)
+        raise typer.Exit(1) from e
 
     # Try project-pinned profile (or fall back to active) when no explicit
     # connection flags given.
@@ -235,24 +271,31 @@ def _build_engine(
             try:
                 prof_dict = expand_profile_secrets(prof_dict)
             except MissingSecretError as e:
-                typer.echo(f"Error: {e}", err=True)
+                _echo_cli_error(e, verbose=verbose_errors)
                 raise typer.Exit(1)
             from pydantic import ValidationError  # noqa: PLC0415
 
-            try:
-                config = load_config(_WREN_HOME)
-            except (WrenError, OSError) as e:
-                typer.echo(f"Error: {e}", err=True)
-                raise typer.Exit(1) from e
+            prof_dict = _secure_connection_info(ds, prof_dict, security_policy)
             try:
                 return WrenEngine(
                     manifest_str=manifest_str,
                     data_source=ds,
                     connection_info=prof_dict,
                     config=config,
+                    security_policy=security_policy,
                 )
             except ValidationError as e:
-                typer.echo(f"Error: invalid profile connection info: {e}", err=True)
+                from wren.model.error import (  # noqa: PLC0415
+                    ErrorCode,
+                    WrenError,
+                )
+
+                wrapped = WrenError(
+                    ErrorCode.INVALID_CONNECTION_INFO,
+                    f"invalid profile connection info: {e}",
+                    cause=e,
+                )
+                _echo_cli_error(wrapped, verbose=verbose_errors)
                 raise typer.Exit(1)
 
     # Existing path: explicit flags / legacy connection_info.json
@@ -266,15 +309,16 @@ def _build_engine(
         raise typer.Exit(1)
 
     try:
-        config = load_config(_WREN_HOME)
+        conn_dict = _secure_connection_info(ds, conn_dict, security_policy)
         return WrenEngine(
             manifest_str=manifest_str,
             data_source=ds,
             connection_info=conn_dict,
             config=config,
+            security_policy=security_policy,
         )
     except (WrenError, OSError) as e:
-        typer.echo(f"Error: {e}", err=True)
+        _echo_cli_error(e, verbose=verbose_errors)
         raise typer.Exit(1) from e
 
 
@@ -311,6 +355,13 @@ QuietOpt = Annotated[
         "--quiet",
         "-q",
         help="Suppress informational tips (e.g. store hints after query).",
+    ),
+]
+VerboseErrorsOpt = Annotated[
+    bool,
+    typer.Option(
+        "--verbose-errors",
+        help="Show full diagnostic error text and metadata instead of the compact summary.",
     ),
 ]
 
@@ -367,6 +418,7 @@ def main(
     limit: LimitOpt = None,
     output: OutputOpt = "table",
     quiet: QuietOpt = False,
+    verbose_errors: VerboseErrorsOpt = False,
     version: Annotated[
         Optional[bool],
         typer.Option(
@@ -412,12 +464,19 @@ def main(
     if sql is None:
         typer.echo(ctx.get_help())
         return
-    with _build_engine(mdl, connection_info, connection_file) as engine:
-        try:
+    try:
+        with _build_engine(
+            mdl,
+            connection_info,
+            connection_file,
+            verbose_errors=verbose_errors,
+        ) as engine:
             result = engine.query(sql, limit=limit)
-        except Exception as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        _echo_cli_error(e, verbose=verbose_errors)
+        raise typer.Exit(1) from e
     _print_result(result, output)
     _maybe_print_store_tip(sql, quiet)
 
@@ -434,14 +493,22 @@ def query(
     limit: LimitOpt = None,
     output: OutputOpt = "table",
     quiet: QuietOpt = False,
+    verbose_errors: VerboseErrorsOpt = False,
 ):
     """Execute a SQL query through the Wren semantic layer."""
-    with _build_engine(mdl, connection_info, connection_file) as engine:
-        try:
+    try:
+        with _build_engine(
+            mdl,
+            connection_info,
+            connection_file,
+            verbose_errors=verbose_errors,
+        ) as engine:
             result = engine.query(sql, limit=limit)
-        except Exception as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        _echo_cli_error(e, verbose=verbose_errors)
+        raise typer.Exit(1) from e
     _print_result(result, output)
     _maybe_print_store_tip(sql, quiet)
 
@@ -459,14 +526,19 @@ def dry_plan(
     ] = None,
     mdl: MdlOpt = None,
     connection_file: ConnFileOpt = None,
+    verbose_errors: VerboseErrorsOpt = False,
 ):
     """Plan SQL through MDL and print the expanded SQL (no DB required)."""
-    from wren.config import load_config  # noqa: PLC0415
     from wren.engine import WrenEngine  # noqa: PLC0415
     from wren.model.data_source import DataSource  # noqa: PLC0415
     from wren.model.error import WrenError  # noqa: PLC0415
 
     manifest_str = _load_manifest(_require_mdl(mdl))
+    try:
+        config, security_policy = _load_engine_security(mdl)
+    except (WrenError, OSError) as e:
+        _echo_cli_error(e, verbose=verbose_errors)
+        raise typer.Exit(1) from e
 
     # Try project-pinned profile (or fall back to active) when no explicit
     # connection flags given.
@@ -486,23 +558,19 @@ def dry_plan(
             except ValueError:
                 typer.echo(f"Error: unknown datasource '{prof_ds}'", err=True)
                 raise typer.Exit(1)
-            try:
-                config = load_config(_WREN_HOME)
-            except (WrenError, OSError) as e:
-                typer.echo(f"Error: {e}", err=True)
-                raise typer.Exit(1) from e
             with WrenEngine(
                 manifest_str=manifest_str,
                 data_source=ds,
                 connection_info={},
                 config=config,
+                security_policy=security_policy,
             ) as engine:
                 try:
                     result = engine.dry_plan(sql)
                     typer.echo(result)
                 except Exception as e:
-                    typer.echo(f"Error: {e}", err=True)
-                    raise typer.Exit(1)
+                    _echo_cli_error(e, verbose=verbose_errors)
+                    raise typer.Exit(1) from e
             return
 
     conn_dict = (
@@ -516,21 +584,19 @@ def dry_plan(
         typer.echo(f"Error: unknown datasource '{ds_str}'", err=True)
         raise typer.Exit(1)
 
-    try:
-        config = load_config(_WREN_HOME)
-    except (WrenError, OSError) as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1) from e
-
     with WrenEngine(
-        manifest_str=manifest_str, data_source=ds, connection_info={}, config=config
+        manifest_str=manifest_str,
+        data_source=ds,
+        connection_info={},
+        config=config,
+        security_policy=security_policy,
     ) as engine:
         try:
             result = engine.dry_plan(sql)
             typer.echo(result)
         except Exception as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
+            _echo_cli_error(e, verbose=verbose_errors)
+            raise typer.Exit(1) from e
 
 
 @app.command(name="dry-run")
@@ -539,15 +605,23 @@ def dry_run(
     mdl: MdlOpt = None,
     connection_info: ConnInfoOpt = None,
     connection_file: ConnFileOpt = None,
+    verbose_errors: VerboseErrorsOpt = False,
 ):
     """Dry-run SQL against the data source (parse + validate, no results returned)."""
-    with _build_engine(mdl, connection_info, connection_file) as engine:
-        try:
+    try:
+        with _build_engine(
+            mdl,
+            connection_info,
+            connection_file,
+            verbose_errors=verbose_errors,
+        ) as engine:
             engine.dry_run(sql)
             typer.echo("OK")
-        except Exception as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        _echo_cli_error(e, verbose=verbose_errors)
+        raise typer.Exit(1) from e
 
 
 # ── Output formatting ──────────────────────────────────────────────────────

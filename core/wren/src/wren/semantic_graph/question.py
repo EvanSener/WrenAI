@@ -8,9 +8,15 @@ from copy import deepcopy
 from typing import Any
 
 from wren.semantic_graph.advanced_planner import plan_graph_query
-from wren.semantic_graph.binding_policy import allowed_bindings, master_model
+from wren.semantic_graph.binding_policy import (
+    allowed_bindings,
+    master_model,
+    source_equivalent_dimension_binding,
+)
 from wren.semantic_graph.frontend import plan_frontend_query
 from wren.semantic_graph.model import GraphPlanningError
+from wren.semantic_graph.partition import normalize_graph_date_range
+from wren.semantic_graph.relative_date import extract_relative_date_window
 from wren.semantic_matching import rank_semantic_members, score_semantic_item
 
 _CHINESE_DIMENSION_PHRASE = re.compile(
@@ -19,6 +25,7 @@ _CHINESE_DIMENSION_PHRASE = re.compile(
 _ENGLISH_DIMENSION_PHRASE = re.compile(
     r"\bby\s+(.+?)(?:\s+(?:show|compare|with|for)\b|$)", re.IGNORECASE
 )
+_EXPLICIT_DATE = re.compile(r"(?<!\d)(\d{8}|\d{4}-\d{2}-\d{2})(?!\d)")
 
 
 class NaturalLanguageGraphFrontend:
@@ -44,6 +51,7 @@ class NaturalLanguageGraphFrontend:
             anchor_model=options.get("anchorModel"),
             max_depth=options.get("maxDepth"),
             path_hints=options.get("pathHints"),
+            date_range_override=options.get("dateRange"),
         )
         if resolution["status"] != "resolved":
             rejections = resolution.get("rejectedCandidates") or []
@@ -61,6 +69,7 @@ class NaturalLanguageGraphFrontend:
             code = {
                 "ambiguous": "GRAPH_QUESTION_SOURCE_AMBIGUOUS",
                 "master_source_conflict": "GRAPH_QUESTION_MASTER_SOURCE_CONFLICT",
+                "partition_range_required": "GRAPH_PARTITION_RANGE_REQUIRED",
                 "unresolved_dimension": "GRAPH_QUESTION_DIMENSION_NOT_FOUND",
                 "unresolved_metric": "GRAPH_QUESTION_METRIC_NOT_FOUND",
             }.get(resolution["status"], "GRAPH_QUESTION_NOT_QUERYABLE")
@@ -86,6 +95,7 @@ def plan_graph_question(
     anchor_model: str | None = None,
     max_depth: int | None = None,
     path_hints: dict[str, Any] | None = None,
+    date_range_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compile a natural-language question through the pluggable frontend."""
 
@@ -93,6 +103,7 @@ def plan_graph_question(
         "anchorModel": anchor_model,
         "maxDepth": max_depth,
         "pathHints": path_hints,
+        "dateRange": date_range_override,
     }
     return plan_frontend_query(
         semantic_graph,
@@ -113,6 +124,7 @@ def resolve_graph_question(
     anchor_model: str | None = None,
     max_depth: int | None = None,
     path_hints: dict[str, Any] | None = None,
+    date_range_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Resolve a question without executing or hiding ambiguous candidates."""
 
@@ -121,11 +133,30 @@ def resolve_graph_question(
             "GRAPH_QUESTION_INVALID", "graph question must be a non-empty string"
         )
     question = question.strip()
+    explicit_date_range = _extract_explicit_date_range(question)
+    relative_date_range = extract_relative_date_window(question)
+    if explicit_date_range is not None and relative_date_range is not None:
+        raise GraphPlanningError(
+            "GRAPH_QUESTION_DATE_RANGE_AMBIGUOUS",
+            "question cannot combine explicit dates with a relative date window",
+            details={
+                "dateRange": explicit_date_range,
+                "relativeDateRange": relative_date_range,
+            },
+        )
+    date_range = (
+        normalize_graph_date_range(
+            date_range_override,
+            path="question.dateRangeOverride",
+        )
+        if date_range_override is not None
+        else explicit_date_range
+    )
     metrics, dimensions = _member_catalog(semantic_graph, ontology_graph)
     metric_matches = rank_semantic_members(question, metrics)
     dimension_phrase = _dimension_phrase(question)
     dimension_phrases = _split_dimension_phrase(dimension_phrase)
-    dimension_matches = rank_semantic_members(question, dimensions)
+    question_dimension_matches = rank_semantic_members(question, dimensions)
     phrase_match_groups = [
         (phrase, rank_semantic_members(phrase, dimensions))
         for phrase in dimension_phrases
@@ -133,7 +164,9 @@ def resolve_graph_question(
     phrase_matches = _merge_matches(
         *(matches for _phrase, matches in phrase_match_groups)
     )
-    dimension_matches = _merge_matches(phrase_matches, dimension_matches)
+    dimension_matches = (
+        phrase_matches if dimension_phrases else question_dimension_matches
+    )
     unresolved_dimension_phrases = [
         phrase for phrase, matches in phrase_match_groups if not matches
     ]
@@ -147,6 +180,8 @@ def resolve_graph_question(
         else "semantic_graph_fallback",
         "dimensionPhrase": dimension_phrase,
         "dimensionPhrases": dimension_phrases,
+        "dateRange": deepcopy(date_range),
+        "relativeDateRange": deepcopy(relative_date_range),
         "metrics": metric_matches,
         "dimensions": dimension_matches,
         "candidates": [],
@@ -218,6 +253,8 @@ def resolve_graph_question(
             "dimensions": dimension_selectors,
             "maxDepth": effective_depth,
         }
+        if date_range is not None:
+            request["dateRange"] = deepcopy(date_range)
         if path_hints:
             request["pathHints"] = deepcopy(path_hints)
         try:
@@ -264,6 +301,7 @@ def resolve_graph_question(
             ontology_graph,
             metric_names,
             dimension_names,
+            dimension_phrase=dimension_phrase,
         )
         successful.append((candidate, request))
 
@@ -272,6 +310,17 @@ def resolve_graph_question(
     base["candidates"] = public_candidates
     base["rejectedCandidates"] = rejected
     if not successful:
+        if any(
+            item.get("code") == "GRAPH_PARTITION_RANGE_REQUIRED" for item in rejected
+        ):
+            return {
+                **base,
+                "status": "partition_range_required",
+                "message": (
+                    "the resolved metric uses an incremental date-partitioned "
+                    "relation; provide an explicit yyyyMMdd start and end date"
+                ),
+            }
         return {
             **base,
             "status": "not_queryable",
@@ -357,6 +406,24 @@ def _dimension_phrase(question: str) -> str | None:
     return None
 
 
+def _extract_explicit_date_range(question: str) -> dict[str, str] | None:
+    values = [match.replace("-", "") for match in _EXPLICIT_DATE.findall(question)]
+    values = list(dict.fromkeys(values))
+    if not values:
+        return None
+    if len(values) > 2:
+        raise GraphPlanningError(
+            "GRAPH_QUESTION_DATE_RANGE_AMBIGUOUS",
+            "question contains more than two explicit dates; provide one day or "
+            "an unambiguous start/end range",
+            details={"dates": values},
+        )
+    return normalize_graph_date_range(
+        {"start": values[0], "end": values[-1]},
+        path="question.dateRange",
+    )
+
+
 def _split_dimension_phrase(value: str | None) -> list[str]:
     if value is None:
         return []
@@ -419,16 +486,24 @@ def _automatic_dimension_selectors(
     bindings: dict[str, list[str]] = {}
     for dimension in dimensions:
         definition = definitions.get(dimension) or {}
+        dimension_bindings = [
+            item
+            for item in semantic_graph.get("dimensionBindings") or []
+            if item.get("dimension") == dimension
+        ]
+        source_binding = source_equivalent_dimension_binding(
+            definition,
+            dimension_bindings,
+            semantic_graph.get("edges") or [],
+            source_model=source,
+        )
         candidates = sorted(
             {
                 binding["model"]
-                for binding in allowed_bindings(
-                    definition,
-                    (
-                        item
-                        for item in semantic_graph.get("dimensionBindings") or []
-                        if item.get("dimension") == dimension
-                    ),
+                for binding in (
+                    [source_binding]
+                    if source_binding is not None
+                    else allowed_bindings(definition, dimension_bindings)
                 )
             }
         )
@@ -527,6 +602,8 @@ def _candidate_summary(
     ontology_graph: dict[str, Any] | None,
     metrics: list[str],
     dimensions: list[str],
+    *,
+    dimension_phrase: str | None,
 ) -> dict[str, Any]:
     node = next(
         (
@@ -537,9 +614,17 @@ def _candidate_summary(
         {"name": source},
     )
     ontology_node = _ontology_dataset(ontology_graph, source)
-    source_score, source_hits = score_semantic_item(question, ontology_node or node)
+    source_question = _source_selection_question(question, dimension_phrase)
+    source_score, source_hits = score_semantic_item(
+        source_question,
+        ontology_node or node,
+    )
     context = _best_query_context(
-        ontology_graph, question, source, metrics=metrics, dimensions=dimensions
+        ontology_graph,
+        source_question,
+        source,
+        metrics=metrics,
+        dimensions=dimensions,
     )
     facts = (plan.get("relationalPlan") or {}).get("facts") or []
     total_hops = sum(
@@ -574,6 +659,14 @@ def _candidate_summary(
         "strategy": plan.get("strategy"),
         "selectionEvidence": evidence,
     }
+
+
+def _source_selection_question(question: str, dimension_phrase: str | None) -> str:
+    """Remove explicit GROUP BY members from business-subject source scoring."""
+
+    if not dimension_phrase:
+        return question
+    return question.replace(dimension_phrase, " ", 1)
 
 
 def _ontology_dataset(
@@ -658,10 +751,10 @@ def _selection_key(candidate: dict[str, Any]) -> tuple[int, int, int, int]:
     evidence = candidate["selectionEvidence"]
     context = evidence.get("queryContext") or {}
     return (
+        int(evidence.get("sourceSemanticScore") or 0),
         int(context.get("semanticScore") or 0),
         int(context.get("dimensionCoverage") or 0),
         int(context.get("priority") or 0),
-        int(evidence.get("sourceSemanticScore") or 0),
     )
 
 

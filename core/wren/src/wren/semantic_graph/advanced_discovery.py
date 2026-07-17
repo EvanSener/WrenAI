@@ -251,7 +251,11 @@ def _discover_metric_facts(
             }
         )
     facts = [
-        {"sourceModel": source, "metrics": metrics}
+        {
+            "sourceModel": source,
+            "metrics": metrics,
+            "dateRange": deepcopy(request.get("dateRange")),
+        }
         for source, metrics in sorted(grouped.items())
     ]
     if not facts:

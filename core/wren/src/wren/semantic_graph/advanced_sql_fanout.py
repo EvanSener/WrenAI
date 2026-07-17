@@ -9,14 +9,16 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from wren.semantic_graph.advanced_sql_common import column_sql, select_sql
-from wren.semantic_graph.advanced_sql_routes import render_routes
+from wren.semantic_graph.advanced_sql_routes import (
+    render_fact_relation,
+    render_routes,
+)
 from wren.semantic_graph.advanced_types import GraphState
 from wren.semantic_graph.model import GraphPlanningError
 from wren.semantic_graph.planner import (
     _alias_expression,
     _qualified_expression,
     _quoted_identifier,
-    _relation_sql,
 )
 
 
@@ -24,9 +26,8 @@ def render_fanout_fact_ctes(
     state: GraphState, fact: dict[str, Any]
 ) -> list[tuple[str, str]]:
     prefix = fact["id"]
-    source_node = state.nodes[fact["sourceModel"]]
     source_alias = "s"
-    relation = _relation_sql(source_node, state.dialect)
+    relation = render_fact_relation(state, fact, fact["sourceModel"])
     key_aliases = [f"__fact_key_{index}" for index in range(len(fact["sourceKeys"]))]
     pre_select: list[str] = []
     pre_group: list[str] = []

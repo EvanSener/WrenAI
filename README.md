@@ -138,8 +138,9 @@ queries, and memory, all reviewable, all Git-friendly.
 
 > "Who are our top 10 customers by sales this quarter?"
 
-Your agent fetches MDL context, recalls similar past queries, writes
-governed SQL, and executes via `wren query`.
+With Semantic Graph artifacts, your agent plans and executes the governed query
+in one `wren graph query --execute` command. Otherwise it falls back to Cube or
+MDL SQL; semantic Memory is optional and queries are stored only on request.
 
 ### 6. Build & deploy a dashboard: the *Deploy* beat
 
@@ -163,9 +164,14 @@ wren skills get enrich-context     # workflow guide: add business context       
 wren skills get genbi              # workflow guide: build & deploy a dashboard      (Deploy)
 
 # Day-to-day
-wren query --sql '...'             # query through the MDL semantic layer
-wren ask "<question>" --guided     # wrap a question for a weaker agent
-wren ask "<question>" --direct     # wrap a question for a stronger agent
+wren context instructions --compact # first question in an Agent session only
+wren graph query --question "<question>" --execute --result-output json
+wren query --sql '...' --quiet      # fallback only when Graph artifacts are absent
+
+# Compatibility prompt wrappers for external/weaker Agents; not an extra
+# step when the installed Wren Skill already governs the question flow.
+wren ask "<question>" --guided
+wren ask "<question>" --direct
 ```
 
 Fast at first. Deep when you need it. Always reviewable and Git-friendly.
@@ -210,7 +216,9 @@ master_model: dim_tenant
 
 The graph compiler validates that the model exists and exposes every atomic
 field required by the member expression. Other compatible bindings remain in
-the graph for lineage, but Queryability and all planners use the master binding.
+the graph for lineage. Planners use the master binding except when a safe
+relationship proves a source-local Dimension Binding is exactly the same
+relationship key; that key can be projected locally without a redundant Join.
 The older `graph.master_data.attributes` dimension setting remains readable for
 backward compatibility; conflicting old and new declarations fail closed.
 
@@ -220,6 +228,7 @@ wren graph show
 wren graph resolve "revenue by customer region" --output json
 wren graph explain --question "revenue by customer region" --output json
 wren graph query --question "revenue by customer region"
+wren graph query --question "revenue by customer region" --execute --result-output json
 wren graph discover --anchor fact_orders
 wren graph explain --source fact_orders --metrics revenue --dimensions tenant
 wren graph query --source fact_orders --metrics revenue --dimensions tenant
@@ -279,8 +288,13 @@ common Grain, and M:N paths require a compiled Bridge plus Allocation policy.
 Unknown cardinality, missing Grain, ambiguous paths, and incompatible
 additivity remain fail-closed.
 
-`wren graph query` is compile-only: it returns warehouse SQL and does not bypass
-the existing Wren execution, access-control, or query-governance path.
+`wren graph query` remains compile-only by default. Add `--execute` to send that
+same plan through the existing WrenEngine and connector path in one command;
+access control, limits, and timeouts remain centralized. MaxCompute partition
+policy is compiled from each Model's `date_partition_type`: snapshots default
+to `max_pt`, incremental facts require an explicit `yyyyMMdd` range or a
+supported latest-partition-relative day window with `--execute`, and
+unpartitioned sources never receive a synthetic `ds` predicate.
 
 The graph build also emits an ontology sidecar with labels, descriptions,
 synonyms, entities, grains, bindings, and Cube hierarchies. It can exchange an

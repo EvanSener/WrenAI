@@ -29,11 +29,17 @@ from sqlglot import exp, parse_one
 
 from wren.config import WrenConfig
 from wren.connector.factory import get_connector
+from wren.maxcompute_partition import MaxComputePartitionRegistry
 from wren.mdl import get_manifest_extractor, get_session_context, to_json_base64
 from wren.mdl.cte_rewriter import CTERewriter, get_sqlglot_dialect
 from wren.model.data_source import DataSource
 from wren.model.error import DIALECT_SQL, ErrorCode, ErrorPhase, WrenError
-from wren.policy import resolve_model_name, validate_sql_policy
+from wren.policy import (
+    parse_single_read_only_statement,
+    resolve_model_name,
+    validate_sql_policy,
+)
+from wren.security import ProjectSecurityPolicy, write_security_audit
 
 
 class WrenEngine:
@@ -61,6 +67,7 @@ class WrenEngine:
         *,
         fallback: bool = True,
         config: WrenConfig | None = None,
+        security_policy: ProjectSecurityPolicy | None = None,
     ):
         if isinstance(data_source, str):
             data_source = DataSource(data_source)
@@ -70,6 +77,12 @@ class WrenEngine:
         self.function_path = function_path
         self._fallback = fallback
         self._config = config or WrenConfig()
+        self._security_policy = security_policy or ProjectSecurityPolicy()
+        self._maxcompute_partition_registry = (
+            MaxComputePartitionRegistry.from_manifest_str(manifest_str)
+            if data_source == DataSource.maxcompute
+            else None
+        )
 
         # Build typed ConnectionInfo if a raw dict was given.
         # An empty dict is allowed for transpile-only usage (no DB connection).
@@ -98,7 +111,14 @@ class WrenEngine:
               → sqlglot generate (target dialect)
               → output SQL with model CTEs in target dialect
         """
-        return self._plan(sql, properties)
+        original_sql = sql
+        try:
+            if self._maxcompute_partition_registry is not None:
+                sql = self._maxcompute_partition_registry.rewrite_semantic_sql(sql)
+        except Exception:
+            self._audit_sql(original_sql, decision="deny")
+            raise
+        return self._plan(sql, properties, audit_content=original_sql)
 
     # ------------------------------------------------------------------
     # SQL execution
@@ -160,7 +180,13 @@ class WrenEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _plan(self, sql: str, properties: dict | None) -> str:
+    def _plan(
+        self,
+        sql: str,
+        properties: dict | None,
+        *,
+        audit_content: str,
+    ) -> str:
         processed = None
         if properties:
             processed = frozenset(properties.items())
@@ -169,12 +195,17 @@ class WrenEngine:
             self.manifest_str, self.data_source
         )
         core_data_source = _core_compatible_data_source(self.data_source)
+        policy_decision_recorded = False
 
         try:
             # Extract minimal manifest scoped to tables referenced in the SQL.
             # Use sqlglot (not DataFusion parser) since input is target dialect.
             dialect = get_sqlglot_dialect(self.data_source)
-            ast = parse_one(sql, dialect=dialect)
+            ast = (
+                parse_single_read_only_statement(sql, dialect)
+                if self._config.read_only
+                else parse_one(sql, dialect=dialect)
+            )
 
             manifest_json = json.loads(base64.b64decode(manifest_str))
             model_names = {m["name"] for m in manifest_json.get("models", [])}
@@ -185,8 +216,16 @@ class WrenEngine:
             queryable_names = model_names | view_names
 
             # Policy validation: check tables and functions before execution.
-            if self._config.strict_mode or self._config.denied_functions:
+            if (
+                self._config.strict_mode
+                or self._config.denied_functions
+                or self._config.read_only
+            ):
                 validate_sql_policy(ast, queryable_names, self._config)
+
+            if self._security_policy.enabled:
+                policy_decision_recorded = True
+                self._audit_sql(audit_content, decision="allow")
 
             # Resolve table refs to canonical manifest names so that
             # ``extract_by`` (case-sensitive in Rust) finds them under SQL's
@@ -206,9 +245,17 @@ class WrenEngine:
             manifest = extractor.extract_by(tables)
             effective_manifest = to_json_base64(manifest)
         except WrenError:
+            if self._security_policy.enabled and not policy_decision_recorded:
+                self._audit_sql(audit_content, decision="deny")
             raise
         except Exception as e:
-            if self._config.strict_mode or self._config.denied_functions:
+            if (
+                self._config.strict_mode
+                or self._config.denied_functions
+                or self._config.read_only
+            ):
+                if self._security_policy.enabled and not policy_decision_recorded:
+                    self._audit_sql(audit_content, decision="deny")
                 raise WrenError(
                     ErrorCode.INVALID_SQL,
                     str(e),
@@ -229,6 +276,11 @@ class WrenEngine:
                 session,
                 self.data_source,
                 fallback=self._fallback,
+                view_sql_preprocessor=(
+                    self._maxcompute_partition_registry.rewrite_semantic_sql
+                    if self._maxcompute_partition_registry is not None
+                    else None
+                ),
             )
             return rewriter.rewrite(sql)
         except Exception as e:
@@ -239,9 +291,24 @@ class WrenEngine:
                 metadata={DIALECT_SQL: sql},
             ) from e
 
+    def _audit_sql(self, content: str, *, decision: str) -> None:
+        if not self._security_policy.enabled:
+            return
+        write_security_audit(
+            self._security_policy,
+            entrypoint="sql.policy",
+            decision=decision,
+            categories=[] if decision == "allow" else ["sql_policy"],
+            content=content,
+        )
+
     def _get_connector(self):
         if self._connector is None:
-            self._connector = get_connector(self.data_source, self.connection_info)
+            self._connector = get_connector(
+                self.data_source,
+                self.connection_info,
+                partition_registry=self._maxcompute_partition_registry,
+            )
         return self._connector
 
 
@@ -251,9 +318,7 @@ def _core_compatible_data_source(data_source: DataSource) -> str:
     return data_source.name
 
 
-def _core_compatible_manifest_json(
-    manifest_json: str, data_source: DataSource
-) -> str:
+def _core_compatible_manifest_json(manifest_json: str, data_source: DataSource) -> str:
     if data_source != DataSource.maxcompute:
         return manifest_json
 

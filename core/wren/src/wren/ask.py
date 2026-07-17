@@ -11,10 +11,11 @@ Modes:
 
 from __future__ import annotations
 
+import json
 from importlib import resources
 
 _TEMPLATES_DIR = "ask_templates"
-_USER_PROMPT_PLACEHOLDER = "<USER_PROMPT>"
+_USER_PROMPT_PLACEHOLDER = "<USER_PROMPT_JSON>"
 
 MODES = ("guided", "direct")
 
@@ -24,10 +25,11 @@ class UnknownAskModeError(ValueError):
 
 
 def render(mode: str, user_prompt: str) -> str:
-    """Return the rendered ``mode`` template with ``user_prompt`` substituted."""
+    """Render ``user_prompt`` as JSON data inside the trusted template."""
     if mode not in MODES:
         raise UnknownAskModeError(mode)
     tpl = (resources.files("wren") / _TEMPLATES_DIR / f"{mode}.md.tmpl").read_text(
         encoding="utf-8"
     )
-    return tpl.replace(_USER_PROMPT_PLACEHOLDER, user_prompt)
+    user_data = json.dumps({"user_question": user_prompt}, ensure_ascii=False)
+    return tpl.replace(_USER_PROMPT_PLACEHOLDER, user_data)

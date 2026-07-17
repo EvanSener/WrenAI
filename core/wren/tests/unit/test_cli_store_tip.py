@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from wren.cli import app
+from wren.model.error import ErrorCode, ErrorPhase, WrenError
 
 pytestmark = pytest.mark.unit
 
@@ -128,3 +129,54 @@ def test_tip_escapes_single_quotes_in_sql():
     assert expected in result.stderr
     # Unescaped form would break shell — must not appear
     assert "--sql 'SELECT * FROM orders WHERE status = 'open''" not in result.stderr
+
+
+def test_query_error_is_compact_by_default():
+    error = WrenError(
+        ErrorCode.INVALID_SQL,
+        "Invalid query near campaign_id\n"
+        "Traceback (most recent call last):\n"
+        "  at internal.maxcompute.Executor.run(Executor.java:123)",
+        phase=ErrorPhase.SQL_EXECUTION,
+        metadata={"dialectSql": "SELECT secret_internal_sql"},
+    )
+    with _mock_engine() as engine:
+        engine.query.side_effect = error
+        result = runner.invoke(
+            app,
+            ["query", "--sql", "SELECT 1", "--quiet"] + _MDL_ARGS + _CONN_FILE_ARGS,
+        )
+
+    assert result.exit_code == 1
+    assert "Error [INVALID_SQL]: Invalid query near campaign_id" in result.stderr
+    assert "phase=SQL_EXECUTION" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "Executor.java" not in result.stderr
+    assert "secret_internal_sql" not in result.stderr
+
+
+def test_query_verbose_errors_restores_full_diagnostics():
+    error = WrenError(
+        ErrorCode.INVALID_SQL,
+        "Invalid query near campaign_id\nserver diagnostic line",
+        phase=ErrorPhase.SQL_EXECUTION,
+        metadata={"dialectSql": "SELECT expanded_sql"},
+    )
+    with _mock_engine() as engine:
+        engine.query.side_effect = error
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "--sql",
+                "SELECT 1",
+                "--quiet",
+                "--verbose-errors",
+            ]
+            + _MDL_ARGS
+            + _CONN_FILE_ARGS,
+        )
+
+    assert result.exit_code == 1
+    assert "server diagnostic line" in result.stderr
+    assert "expanded_sql" in result.stderr

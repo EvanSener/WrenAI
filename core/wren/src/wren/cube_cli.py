@@ -225,6 +225,21 @@ def resolve(
 ) -> None:
     """Resolve Chinese or English business terms to stable Cube/member names."""
     from wren.cube_semantics import resolve_cubes  # noqa: PLC0415
+    from wren.model.error import WrenError  # noqa: PLC0415
+    from wren.security import (  # noqa: PLC0415
+        discover_security_project,
+        enforce_business_question,
+    )
+
+    try:
+        enforce_business_question(
+            question,
+            project_path=discover_security_project(mdl),
+            entrypoint="cube.resolve",
+        )
+    except WrenError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     result = resolve_cubes(_load_manifest_dict(mdl), question, limit=limit)
     if json_output:
@@ -337,6 +352,13 @@ def query(
     output: Annotated[
         str, typer.Option("--output", "-o", help="Output format: json|csv|table")
     ] = "table",
+    verbose_errors: Annotated[
+        bool,
+        typer.Option(
+            "--verbose-errors",
+            help="Show full diagnostic error text and metadata.",
+        ),
+    ] = False,
 ) -> None:
     """Execute a structured cube query.
 
@@ -381,7 +403,9 @@ def query(
     try:
         sql = cube_query_to_sql(json.dumps(cube_query), mdl_json)
     except ValueError as e:
-        typer.echo(f"Error: {e}", err=True)
+        from wren.graph_observability import echo_cli_error  # noqa: PLC0415
+
+        echo_cli_error(e, verbose=verbose_errors)
         raise typer.Exit(1) from e
 
     if sql_only:
@@ -389,11 +413,19 @@ def query(
         return
 
     from wren.cli import _build_engine, _print_result  # noqa: PLC0415
+    from wren.graph_observability import echo_cli_error  # noqa: PLC0415
 
-    with _build_engine(mdl, connection_info, connection_file) as engine:
-        try:
+    try:
+        with _build_engine(
+            mdl,
+            connection_info,
+            connection_file,
+            verbose_errors=verbose_errors,
+        ) as engine:
             result = engine.query(sql)
-        except Exception as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1) from e
+    except typer.Exit:
+        raise
+    except Exception as e:
+        echo_cli_error(e, verbose=verbose_errors)
+        raise typer.Exit(1) from e
     _print_result(result, output)

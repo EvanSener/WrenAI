@@ -1335,9 +1335,23 @@ def show(
 @context_app.command()
 def instructions(
     path: ProjectPathOpt = None,
+    compact: Annotated[
+        bool,
+        typer.Option(
+            "--compact",
+            help=(
+                "Keep rules and small mappings, but summarize large Markdown "
+                "tables for low-token agent use."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Print business rules (knowledge/rules/ + legacy instructions.md) for LLM consumption."""
-    from wren.context import discover_project_path, load_rules  # noqa: PLC0415
+    from wren.context import (  # noqa: PLC0415
+        compact_rules_for_agent,
+        discover_project_path,
+        load_rules,
+    )
 
     try:
         project_path = discover_project_path(path)
@@ -1353,6 +1367,8 @@ def instructions(
             err=True,
         )
     if content:
+        if compact:
+            content = compact_rules_for_agent(content)
         typer.echo(content)
 
 

@@ -14,6 +14,8 @@ from wren.graph_cli_support import (
     load_optional_ontology,
     validate_output,
 )
+from wren.model.error import WrenError
+from wren.security import enforce_business_question
 from wren.semantic_graph.question import resolve_graph_question
 
 
@@ -44,6 +46,15 @@ def resolve_command(
 
     output = validate_output(output, allowed={"summary", "json"})
     project_path = discover_project(path)
+    try:
+        enforce_business_question(
+            question,
+            project_path=project_path,
+            entrypoint="graph.resolve",
+        )
+    except WrenError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
     graph, index = load_artifacts(project_path)
     ontology = load_optional_ontology(project_path)
     resolution = resolve_graph_question(

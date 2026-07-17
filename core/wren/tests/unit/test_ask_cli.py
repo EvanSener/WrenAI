@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -30,15 +33,19 @@ def test_guided_includes_task_flow_and_substitutes_prompt():
     assert result.exit_code == 0
     assert "TASK TYPE A" in result.output
     assert "TASK TYPE B" in result.output
-    assert "wren context show" in result.output
-    assert "wren graph resolve" in result.output
-    assert "wren graph explain" in result.output
+    assert "1–3 Wren commands" in result.output
+    assert "wren context instructions --compact" in result.output
     assert "wren graph query" in result.output
+    assert "--execute" in result.output
+    assert "--result-output json" in result.output
     assert "wren cube resolve" in result.output
     assert "wren cube query" in result.output
-    assert "description" in result.output
-    assert "synonyms" in result.output
-    assert "hierarch" in result.output.lower()
+    assert "first Wren Memory failure" in result.output
+    assert "Never store unless the user explicitly asks" in result.output
+    assert "hard ceiling of 2 attempts" in result.output
+    assert "Never run a third SQL" in result.output
+    assert "omitted from the graph plan" in result.output
+    assert "omitted from graph explain" not in result.output
     assert "top 5 customers by revenue" in result.output
     assert "<USER_PROMPT>" not in result.output  # placeholder substituted
 
@@ -48,7 +55,15 @@ def test_direct_minimal_and_substitutes_prompt():
     assert result.exit_code == 0
     assert "wren skills list" in result.output
     assert "wren --help" in result.output
+    assert "Do not run either command before an ordinary data question" in result.output
+    assert "1–3 Wren commands" in result.output
+    assert "wren context instructions --compact" in result.output
+    assert "--execute" in result.output
+    assert "do not call Memory again" in result.output
+    assert "at most two candidate" in result.output
     assert "monthly orders trend" in result.output
+    assert "<UNTRUSTED_USER_INPUT_JSON>" in result.output
+    assert '"user_question": "monthly orders trend"' in result.output
     assert "<USER_PROMPT>" not in result.output
     # direct mode should NOT include the guided TASK TYPE structure
     assert "TASK TYPE A" not in result.output
@@ -73,3 +88,43 @@ def test_user_prompt_with_template_placeholder_substring_is_safe():
     out = ask_mod.render("direct", prompt)
     # the bundled placeholder is gone and the prompt is present (verbatim)
     assert prompt in out
+
+
+def test_render_json_escapes_prompt_line_breaks():
+    out = ask_mod.render("direct", "revenue\nsecond line")
+    data_block = out.split("<UNTRUSTED_USER_INPUT_JSON>", 1)[1].split(
+        "</UNTRUSTED_USER_INPUT_JSON>", 1
+    )[0]
+    assert "revenue\\nsecond line" in data_block
+    assert "revenue\nsecond line" not in data_block
+
+
+def test_ordinary_query_contract_is_consistent_across_agent_surfaces():
+    repo = Path(__file__).resolve().parents[4]
+    surfaces = {
+        "discovery skill": repo / "skills" / "wren" / "SKILL.md",
+        "packaged usage": (
+            repo
+            / "core"
+            / "wren"
+            / "src"
+            / "wren"
+            / "skills_content"
+            / "usage"
+            / "SKILL.md"
+        ),
+        "direct ask": (
+            repo / "core" / "wren" / "src" / "wren" / "ask_templates" / "direct.md.tmpl"
+        ),
+        "guided ask": (
+            repo / "core" / "wren" / "src" / "wren" / "ask_templates" / "guided.md.tmpl"
+        ),
+    }
+
+    for name, path in surfaces.items():
+        content = path.read_text(encoding="utf-8")
+        normalized = content.replace("*", "").lower()
+        assert "wren context instructions --compact" in content, name
+        assert "wren graph query" in content and "--execute" in content, name
+        assert "2–4 Wren commands" not in content, name
+        assert re.search(r"(?:two|2).{0,50}(?:attempt|candidate)", normalized), name

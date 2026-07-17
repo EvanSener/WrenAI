@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from collections.abc import Callable
 
 import sqlglot
 from sqlglot import exp, parse_one
@@ -94,10 +95,12 @@ class CTERewriter:
         data_source: DataSource,
         *,
         fallback: bool = True,
+        view_sql_preprocessor: Callable[[str], str] | None = None,
     ):
         self.session_context = session_context
         self.data_source = data_source
         self.fallback = fallback
+        self.view_sql_preprocessor = view_sql_preprocessor
         self.dialect = get_sqlglot_dialect(data_source)
         # Upper-folding dialects (Oracle, Snowflake, …) uppercase every unquoted
         # identifier, which would change result-set column names (aggregate
@@ -325,9 +328,7 @@ class CTERewriter:
                 ast, model_cte_refs, user_cte_names
             )
 
-        model_ctes = self._build_model_ctes(
-            used_columns, model_cte_refs, col_quoting
-        )
+        model_ctes = self._build_model_ctes(used_columns, model_cte_refs, col_quoting)
         view_ctes = self._build_view_ctes(view_refs, model_cte_refs)
         self._inject_ctes(ast, model_ctes + view_ctes)
         return ast.sql(dialect=self.dialect, identify=identify)
@@ -942,7 +943,9 @@ class CTERewriter:
         from_ = select.args.get("from_") or select.args.get("from")
         if from_:
             from_sources = [from_.this, *from_.expressions]
-            tables.extend(source for source in from_sources if isinstance(source, exp.Table))
+            tables.extend(
+                source for source in from_sources if isinstance(source, exp.Table)
+            )
         for join in select.args.get("joins") or []:
             source = join.this
             if isinstance(source, exp.Table):
@@ -957,7 +960,9 @@ class CTERewriter:
         """Rewrite column qualifiers in one SELECT scope, skipping child scopes."""
 
         def rewrite(node: exp.Expression) -> None:
-            if node is not select and isinstance(node, (exp.Select, exp.Subquery, exp.CTE)):
+            if node is not select and isinstance(
+                node, (exp.Select, exp.Subquery, exp.CTE)
+            ):
                 return
             if isinstance(node, exp.Column) and node.table:
                 replacement = qualifier_rewrites.get(node.table.lower())
@@ -1053,9 +1058,7 @@ class CTERewriter:
         earlier with a "table not found" planning error.)
         """
         for view_name in view_refs:
-            view_ast = parse_one(
-                self.view_dict[view_name]["statement"], dialect=self.dialect
-            )
+            view_ast = parse_one(self._view_statement(view_name), dialect=self.dialect)
             view_cte_names = self._collect_user_cte_names(view_ast)
             # Resolve the view body's column refs the same way as the user query,
             # so a case-distinct model referenced from a view statement gets the
@@ -1113,9 +1116,7 @@ class CTERewriter:
         """
         ctes: list[exp.CTE] = []
         for view_name, (cte_name, cte_quoted) in view_refs.items():
-            body = parse_one(
-                self.view_dict[view_name]["statement"], dialect=self.dialect
-            )
+            body = parse_one(self._view_statement(view_name), dialect=self.dialect)
             if self._uses_distinct_model_cte_aliases:
                 self._rewrite_model_table_refs_to_cte_aliases(
                     body,
@@ -1130,6 +1131,12 @@ class CTERewriter:
             )
             ctes.append(cte)
         return ctes
+
+    def _view_statement(self, view_name: str) -> str:
+        statement = self.view_dict[view_name]["statement"]
+        if self.view_sql_preprocessor is not None:
+            return self.view_sql_preprocessor(statement)
+        return statement
 
     @staticmethod
     def _rename_outer_alias(ast: exp.Expression, model_name: str) -> None:

@@ -13,9 +13,51 @@ from wren.cli import app
 from wren.semantic_graph.frontend import plan_frontend_query
 from wren.semantic_graph.model import GraphPlanningError
 from wren.semantic_graph.question import (
+    _extract_explicit_date_range,
     plan_graph_question,
     resolve_graph_question,
 )
+from wren.semantic_graph.relative_date import (
+    date_range_from_latest_partition,
+    extract_relative_date_window,
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        (
+            "统计 20260101 到 20260131 的销售额",
+            {"start": "20260101", "end": "20260131"},
+        ),
+        (
+            "统计 2026-01-01 当天销售额",
+            {"start": "20260101", "end": "20260101"},
+        ),
+    ],
+)
+def test_question_normalizes_explicit_partition_dates(
+    question: str, expected: dict[str, str]
+) -> None:
+    assert _extract_explicit_date_range(question) == expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "最近15天按客户统计销售额",
+        "过去 15 日按客户统计销售额",
+        "revenue by customer in the last 15 days",
+    ],
+)
+def test_question_extracts_latest_partition_relative_window(question: str) -> None:
+    relative = extract_relative_date_window(question)
+
+    assert relative == {"days": 15, "anchor": "latest_partition"}
+    assert date_range_from_latest_partition(relative, "20260717") == {
+        "start": "20260703",
+        "end": "20260717",
+    }
 
 
 def _node(name: str, fields: list[str], *, label: str | None = None) -> dict:
@@ -186,6 +228,96 @@ def test_question_compiles_ontology_members_over_safe_a_b_c_path() -> None:
     assert [step["relationship"] for step in dimension["path"]] == ["a_b", "b_c"]
     assert plan["strategy"] == "SINGLE_FACT_SAFE"
     assert sqlglot.parse_one(plan["sql"], dialect="hive") is not None
+
+
+def test_explicit_group_by_phrase_excludes_subject_dimensions() -> None:
+    graph = _graph()
+    graph["dimensions"].append(
+        {
+            "name": "fact_subject",
+            "label": "事实A",
+            "description": "事实A业务对象",
+            "synonyms": [],
+            "expression": "id",
+            "type": "STRING",
+            "masterModel": "fact_a",
+        }
+    )
+    graph["dimensionBindings"].append(
+        {
+            "id": "fact_subject@fact_a",
+            "dimension": "fact_subject",
+            "model": "fact_a",
+            "isMaster": True,
+        }
+    )
+    ontology = _ontology(graph)
+    ontology["nodes"].append(
+        {
+            "id": "dimension:fact_subject",
+            "type": "DIMENSION",
+            "name": "fact_subject",
+            "label": "事实A",
+            "description": "事实A业务对象",
+            "synonyms": [],
+            "properties": {},
+        }
+    )
+
+    resolution = resolve_graph_question(
+        graph,
+        _index(),
+        "按叶子地区统计事实A的销售额",
+        ontology_graph=ontology,
+    )
+
+    assert resolution["status"] == "resolved"
+    assert [item["name"] for item in resolution["dimensions"]] == ["leaf_region"]
+
+
+def test_business_subject_outranks_generic_cube_metric_context() -> None:
+    graph = _graph(second_fact=True)
+    ontology = _ontology(graph)
+    ontology["nodes"].append(
+        {
+            "id": "cube:generic_x",
+            "type": "CUBE",
+            "name": "generic_x",
+            "label": "通用效果",
+            "description": "销售额收入指标",
+            "synonyms": [],
+            "properties": {"priority": 100},
+        }
+    )
+    ontology["edges"].extend(
+        [
+            {
+                "type": "CUBE_BASE_DATASET",
+                "sourceId": "cube:generic_x",
+                "targetId": "dataset:fact_x",
+            },
+            {
+                "type": "CUBE_METRIC",
+                "sourceId": "cube:generic_x",
+                "targetId": "metric:revenue",
+            },
+            {
+                "type": "CUBE_DIMENSION",
+                "sourceId": "cube:generic_x",
+                "targetId": "dimension:leaf_region",
+            },
+        ]
+    )
+
+    resolution = resolve_graph_question(
+        graph,
+        _index(),
+        "按叶子地区统计事实A销售额",
+        ontology_graph=ontology,
+    )
+
+    assert resolution["status"] == "resolved"
+    assert resolution["selectedAnchor"] == "fact_a"
 
 
 def test_equal_source_evidence_is_reported_without_guessing() -> None:
@@ -426,3 +558,95 @@ def test_graph_cli_resolve_and_query_question_over_a_b_c(tmp_path: Path) -> None
     assert "`bridge_b`" in queried.stdout
     assert "`leaf_c`" in queried.stdout
     assert sqlglot.parse_one(queried.stdout, dialect="hive") is not None
+
+
+def test_graph_cli_query_timings_keep_sql_stdout_clean(tmp_path: Path) -> None:
+    graph = _graph()
+    _write_graph_project(tmp_path, graph)
+    runner = CliRunner()
+
+    queried = runner.invoke(
+        app,
+        [
+            "graph",
+            "query",
+            "--question",
+            "按叶子地区看事实A销售额",
+            "--path",
+            str(tmp_path),
+            "--timings",
+        ],
+    )
+
+    assert queried.exit_code == 0, queried.output
+    assert sqlglot.parse_one(queried.stdout, dialect="hive") is not None
+    timing_lines = queried.stderr.splitlines()
+    assert len(timing_lines) == 1
+    payload = json.loads(timing_lines[0])
+    assert payload["schemaVersion"] == 1
+    assert payload["kind"] == "GRAPH_QUERY_TIMINGS"
+    assert payload["status"] == "success"
+    assert {
+        "requestPreparation",
+        "projectDiscovery",
+        "securityPolicy",
+        "artifactLoading",
+        "graphPlanning",
+        "resultRendering",
+    }.issubset(payload["stagesMs"])
+
+
+def test_graph_cli_query_error_is_compact_and_timings_survive_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _graph()
+    _write_graph_project(tmp_path, graph)
+    runner = CliRunner()
+
+    def fail_planning(*_args, **_kwargs):
+        raise GraphPlanningError(
+            "GRAPH_NO_SAFE_PLAN",
+            "no safe plan exists\nserver-side planner stack",
+            details={"rejectedCandidates": [{"path": "fact_a -> bridge_b"}]},
+        )
+
+    monkeypatch.setattr("wren.graph_cli.plan_graph_question", fail_planning)
+    compact = runner.invoke(
+        app,
+        [
+            "graph",
+            "query",
+            "--question",
+            "按叶子地区看事实A销售额",
+            "--path",
+            str(tmp_path),
+            "--timings",
+        ],
+    )
+
+    assert compact.exit_code == 1
+    assert compact.stdout == ""
+    assert "Error [GRAPH_NO_SAFE_PLAN]: no safe plan exists" in compact.stderr
+    assert "server-side planner stack" not in compact.stderr
+    assert "rejectedCandidates" not in compact.stderr
+    payload = json.loads(compact.stderr.splitlines()[-1])
+    assert payload["status"] == "failure"
+    assert payload["failedStage"] == "graphPlanning"
+    assert payload["errorCode"] == "GRAPH_NO_SAFE_PLAN"
+
+    verbose = runner.invoke(
+        app,
+        [
+            "graph",
+            "query",
+            "--question",
+            "按叶子地区看事实A销售额",
+            "--path",
+            str(tmp_path),
+            "--verbose-errors",
+        ],
+    )
+    assert verbose.exit_code == 1
+    assert "server-side planner stack" in verbose.stderr
+    assert "rejectedCandidates" in verbose.stderr

@@ -10,11 +10,13 @@ from wren.semantic_graph.advanced_calculation_inputs import (
 )
 from wren.semantic_graph.advanced_types import GraphState
 from wren.semantic_graph.model import GraphPlanningError
+from wren.semantic_graph.partition import normalize_graph_date_range
 
 _REQUEST_FIELDS = {
     "anchorModel",
     "attributes",
     "calculations",
+    "dateRange",
     "dimensions",
     "entityGrain",
     "fanoutMode",
@@ -78,6 +80,9 @@ def normalize_request(request: dict[str, Any], state: GraphState) -> dict[str, A
             details={"fanoutMode": fanout_mode, "allowed": ["reject", "repeat"]},
         )
     path_hints = normalize_path_hints(request.get("pathHints") or {})
+    top_date_range = normalize_graph_date_range(
+        request.get("dateRange"), path="request.dateRange"
+    )
 
     raw_facts = request.get("facts")
     source_convenience = False
@@ -116,7 +121,17 @@ def normalize_request(request: dict[str, Any], state: GraphState) -> dict[str, A
                 "GRAPH_FACT_METRIC_REQUIRED",
                 f"fact '{source}' must request at least one metric",
             )
-        facts.append({"sourceModel": source, "metrics": metrics})
+        fact_date_range = normalize_graph_date_range(
+            raw_fact.get("dateRange", top_date_range),
+            path=f"request.facts[{fact_index}].dateRange",
+        )
+        facts.append(
+            {
+                "sourceModel": source,
+                "metrics": metrics,
+                "dateRange": fact_date_range,
+            }
+        )
 
     raw_top_metrics = None if source_convenience else request.get("metrics")
     # Reachability controls schema discovery only.  It must never turn an
@@ -201,6 +216,7 @@ def normalize_request(request: dict[str, Any], state: GraphState) -> dict[str, A
         )
     return {
         "schemaVersion": schema_version,
+        "dateRange": top_date_range,
         "facts": facts,
         "anchorModel": anchor,
         "includeReachable": include_reachable,

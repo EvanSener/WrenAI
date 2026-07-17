@@ -12,6 +12,10 @@ from wren.connector.maxcompute import (
     MaxComputeConnector,
     _apply_latest_partition_filter,
 )
+from wren.maxcompute_partition import (
+    MaxComputePartitionPolicy,
+    MaxComputePartitionRegistry,
+)
 from wren.model import MaxComputeConnectionInfo
 from wren.model.error import ErrorCode, ErrorPhase, WrenError
 
@@ -183,6 +187,33 @@ def test_query_executes_with_hints_and_returns_arrow(fake_odps) -> None:
     assert fake_odps.options.tunnel.limit_instance_tunnel is None
     assert table.column("id").to_pylist() == [1, 2]
     assert table.column("name").to_pylist() == ["a", "b"]
+
+
+def test_connector_does_not_blindly_filter_managed_unpartitioned_model(
+    fake_odps,
+) -> None:
+    registry = MaxComputePartitionRegistry(
+        [
+            MaxComputePartitionPolicy(
+                model="source_view",
+                physical_table="source_view",
+                partition_type="unpartitioned",
+                column=None,
+                default=None,
+                declared=True,
+            )
+        ]
+    )
+    connector = MaxComputeConnector(_info(), partition_registry=registry)
+
+    connector.query("SELECT id FROM source_view", limit=1)
+
+    statement = fake_odps.connections[-1].execute_calls[-1]["sql"]
+    assert statement == (
+        "SELECT * FROM (SELECT id FROM source_view) AS _wren_sub LIMIT 1"
+    )
+    assert "max_pt" not in statement.casefold()
+    assert ".ds" not in statement.casefold()
 
 
 def test_latest_partition_filter_preserves_explicit_ds() -> None:

@@ -8,6 +8,7 @@ from wren.semantic_graph.advanced_bridge import normalized_bridge_policy
 from wren.semantic_graph.advanced_member_routes import member_routes
 from wren.semantic_graph.advanced_sql_common import column_sql, select_sql
 from wren.semantic_graph.advanced_types import GraphState
+from wren.semantic_graph.partition import render_partitioned_relation
 from wren.semantic_graph.planner import (
     _alias_expression,
     _qualified_expression,
@@ -125,14 +126,16 @@ def render_routes(
                         step["to"]: target_alias,
                     },
                 )
+                bridge_relation = render_fact_relation(state, fact, policy["model"])
                 joins.append(
                     "LEFT JOIN "
-                    f"{_relation_sql(state.nodes[policy['model']], state.dialect)} "
+                    f"{bridge_relation} "
                     f"AS {bridge_alias} ON {source_condition}"
                 )
+                target_relation = render_fact_relation(state, fact, step["to"])
                 joins.append(
                     "LEFT JOIN "
-                    f"{_relation_sql(state.nodes[step['to']], state.dialect)} "
+                    f"{target_relation} "
                     f"AS {target_alias} ON {target_condition}"
                 )
                 allocation_expression = _qualified_expression(
@@ -165,10 +168,9 @@ def render_routes(
                         step["to"]: target_alias,
                     },
                 )
+                target_relation = render_fact_relation(state, fact, step["to"])
                 joins.append(
-                    "LEFT JOIN "
-                    f"{_relation_sql(state.nodes[step['to']], state.dialect)} "
-                    f"AS {target_alias} ON {condition}"
+                    f"LEFT JOIN {target_relation} AS {target_alias} ON {condition}"
                 )
                 current_alias = target_alias
             aliases[route] = current_alias
@@ -179,10 +181,24 @@ def render_routes(
     for member in routable_members:
         if member.get("memberKind") == "calculation":
             member["modelAliases"] = dict(member_aliases[member["alias"]])
-    source_relation = _relation_sql(state.nodes[source], state.dialect)
+    source_relation = render_fact_relation(state, fact, source)
     return (
         f"FROM {source_relation} AS s",
         joins,
         member_aliases,
         list(allocations.values()),
+    )
+
+
+def render_fact_relation(state: GraphState, fact: dict[str, Any], model: str) -> str:
+    """Render one relation with the fact plan's model-aware partition policy."""
+
+    node = state.nodes[model]
+    relation = _relation_sql(node, state.dialect)
+    plan = (fact.get("relationPartitions") or {}).get(model)
+    return render_partitioned_relation(
+        relation,
+        node,
+        plan,
+        dialect=state.dialect,
     )

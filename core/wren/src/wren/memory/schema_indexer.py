@@ -82,6 +82,11 @@ def _describe_model(model: dict, lines: list[str]) -> None:
     table_description = _table_reference_description(model)
     if table_description:
         lines.append(f"  Table description: {table_description}")
+    partition_type = _table_reference_value(
+        model, "datePartitionType", "date_partition_type"
+    )
+    if partition_type:
+        lines.append(f"  Date partition type: {partition_type}")
 
     pk = model.get("primaryKey")
     if pk:
@@ -319,6 +324,11 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
     table_description = _table_reference_description(model)
     if table_description:
         parts.append(f". Table description: {table_description}")
+    partition_type = _table_reference_value(
+        model, "datePartitionType", "date_partition_type"
+    )
+    if partition_type:
+        parts.append(f". Date partition type: {partition_type}")
     parts.append(f". Columns: {col_summaries}")
     if pk:
         parts.append(f". Primary key: {pk}")
@@ -650,6 +660,17 @@ def _table_reference_description(model: dict) -> str:
         return ""
     value = table_ref.get("description")
     return str(value).strip() if value not in (None, "") else ""
+
+
+def _table_reference_value(model: dict, *keys: str) -> str:
+    table_ref = model.get("tableReference") or model.get("table_reference")
+    if not isinstance(table_ref, dict):
+        return ""
+    for key in keys:
+        value = table_ref.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 def _prop_value(obj: dict, *keys: str) -> str:

@@ -6,6 +6,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Any
 
+from wren.maxcompute_partition import partition_policy_for_model
 from wren.metric_compiler import ObjectFieldResolver
 from wren.semantic_graph.model import GraphIssue
 
@@ -103,6 +104,9 @@ def compile_nodes(
                 obj.get("properties") if isinstance(obj.get("properties"), dict) else {}
             )
             relation = _relation_descriptor(kind, obj)
+            partition_policy = (
+                partition_policy_for_model(obj) if kind == "model" else None
+            )
             node = {
                 "name": name,
                 "kind": kind,
@@ -116,6 +120,8 @@ def compile_nodes(
                 "dimensionBindings": [],
                 "relation": relation,
             }
+            if partition_policy is not None:
+                node["partitionPolicy"] = partition_policy
             nodes.append(node)
             state[name] = {
                 "artifact": node,
