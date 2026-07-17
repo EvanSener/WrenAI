@@ -47,6 +47,7 @@ does not compile into MDL.
 name: total_revenue
 expression: SUM(amount)
 type: DOUBLE
+master_model: orders
 label: 广告销售额
 description: 归因给广告的销售金额总和。
 synonyms: [销售额, 广告收入]
@@ -121,6 +122,31 @@ type: DATE
 label: 下单日期
 description: 订单创建日期。
 ```
+
+## Pin authoritative graph bindings when needed
+
+`master_model` is optional and only affects the additive `wren graph` workflow.
+Use it when a global metric or dimension can bind to several compatible models
+but one model is the governed source of truth:
+
+```yaml
+# dimensions/country/metadata.yml
+name: country
+expression: country_code
+type: VARCHAR
+master_model: dim_country
+```
+
+The graph compiler verifies that `dim_country` exists and contains every atomic
+field used by the expression. It keeps other compatible bindings for lineage,
+but Queryability, natural-language resolution, structured planning, derived
+metric expansion, and Explain all select the master binding. An explicit
+request for another model fails instead of silently overriding governance.
+
+This field does not create a relationship; paths still come only from
+`relationships.yml > relationships`. It is also removed when a global member
+is expanded into an existing Cube, so `wren context build`, MDL, and projects
+without `master_model` retain their previous behavior.
 
 ## Define a cube
 

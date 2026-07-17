@@ -31,6 +31,9 @@ def test_guided_includes_task_flow_and_substitutes_prompt():
     assert "TASK TYPE A" in result.output
     assert "TASK TYPE B" in result.output
     assert "wren context show" in result.output
+    assert "wren graph resolve" in result.output
+    assert "wren graph explain" in result.output
+    assert "wren graph query" in result.output
     assert "wren cube resolve" in result.output
     assert "wren cube query" in result.output
     assert "description" in result.output

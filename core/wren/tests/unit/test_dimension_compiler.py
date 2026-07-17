@@ -246,7 +246,11 @@ def test_build_json_compiles_dimension_names_to_runtime_members(
     dimension_dir = tmp_path / "dimensions" / "campaign"
     dimension_dir.mkdir(parents=True)
     (dimension_dir / "metadata.yml").write_text(
-        "name: campaign\nexpression: cam_pk_code\ntype: STRING\nlabel: 广告活动\n",
+        "name: campaign\n"
+        "expression: cam_pk_code\n"
+        "type: STRING\n"
+        "label: 广告活动\n"
+        "master_model: fact_ads\n",
         encoding="utf-8",
     )
     cube_dir = tmp_path / "cubes" / "campaign_ads"
@@ -269,4 +273,5 @@ def test_build_json_compiles_dimension_names_to_runtime_members(
             "label": "广告活动",
         }
     ]
+    assert "master_model" not in manifest["cubes"][0]["dimensions"][0]
     assert "dimensions" not in manifest

@@ -241,7 +241,11 @@ def test_build_json_compiles_metric_names_to_runtime_measure_objects(
     metric_dir = tmp_path / "metrics" / "clicks_sum"
     metric_dir.mkdir(parents=True)
     (metric_dir / "metadata.yml").write_text(
-        "name: clicks_sum\nexpression: SUM(clicks)\ntype: BIGINT\nlabel: 点击量\n",
+        "name: clicks_sum\n"
+        "expression: SUM(clicks)\n"
+        "type: BIGINT\n"
+        "label: 点击量\n"
+        "master_model: fact_ads\n",
         encoding="utf-8",
     )
     cube_dir = tmp_path / "cubes" / "ads"
@@ -259,3 +263,4 @@ def test_build_json_compiles_metric_names_to_runtime_measure_objects(
         "type": "BIGINT",
         "label": "点击量",
     }
+    assert "master_model" not in measure

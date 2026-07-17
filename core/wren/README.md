@@ -120,6 +120,39 @@ runs them through the same engine path as `wren --sql`. See the
 and the [CLI reference](../../docs/core/reference/cli.md#wren-cube--pre-aggregation-queries) for all
 flags.
 
+**4b. (Optional) Query a relationship graph as a virtual wide table** — keep
+physical edges in `relationships.yml`, then build graph-only sidecars and
+submit a structured YAML/JSON request:
+
+```bash
+wren graph build
+wren graph resolve "revenue by customer region" --output json
+wren graph explain --question "revenue by customer region" --output json
+wren graph query --question "revenue by customer region"
+wren graph discover --anchor orders
+wren graph explain --request graph_queries/orders.yml --output json
+wren graph query --request graph_queries/orders.yml
+```
+
+Natural-language, BI, or future graph-language frontends compile into the same
+versioned `GraphQueryRequest`; they do not duplicate path, Grain, fanout, or SQL
+rules. The request can select arbitrary-depth reachable dimensions, raw
+`model.field` attributes, cross-node row calculations, safe leaf-field
+aggregates, multiple facts, and post-aggregate metrics. The planner emits SQL
+only for explicitly selected members; ambiguous paths, unsafe cardinality,
+missing Grain, implicit 1:M, and ungoverned M:N fail closed. An explicit
+`fanoutMode: repeat` acknowledges that a fact may repeat across child members
+and is not additive across that dimension. This graph workflow is additive
+and does not change `wren context build`, Cube compilation, or MDL execution.
+`wren graph query` compiles SQL only and does not execute it.
+
+When a global Metric or Dimension can bind to several nodes, its
+`metrics/*/metadata.yml` or `dimensions/*/metadata.yml` may set an optional
+`master_model`. Graph compilation validates that source and restricts graph
+planning to its binding; compatible alternatives remain visible for lineage.
+The field is graph-only, creates no edge, and is stripped from legacy Cube MDL.
+See the [semantic graph design](../../docs/semantic-graph-virtual-wide-table.md).
+
 **5. (Optional) Configure security policy** — create `~/.wren/config.json`:
 
 ```json

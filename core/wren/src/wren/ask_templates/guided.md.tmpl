@@ -3,16 +3,22 @@ Identify the task type, then follow the matching flow:
 
 TASK TYPE A — data question:
   1. wren context show [--path <project>]   # see MDL models and project rules
-  2. wren cube resolve "<user question>" --json  # deterministic label/description/synonyms routing
-  3. wren memory recall --nl "<keywords>"   # similar past queries (skip if no memory)
-  4. If a cube covers the requested metrics and dimensions:
+  2. If target/semantic_graph.json exists, resolve through the governed graph first:
+     a. wren graph resolve "<user question>" --output json
+     b. if resolved, run wren graph explain --question "<user question>" --output json
+     c. run wren graph query --question "<user question>" to compile the selected relationship path to SQL
+     d. graph query is compile-only; execute its SQL only through the existing dry-plan/query policy path
+  3. If graph artifacts are absent or resolution is unresolved, use the compatible Cube router:
+     wren cube resolve "<user question>" --json  # deterministic label/description/synonyms routing
+  4. wren memory recall --nl "<keywords>"   # similar past queries (skip if no memory)
+  5. If a cube covers the requested metrics and dimensions:
      a. use the stable names from suggestedQuery
      b. when the user asks for drill/detail, expand its hierarchy to explicit dimensions
      c. wren cube query --cube <name> --measures <names> --dimensions <names> [filters]
-  5. Otherwise, write SQL using model names (not raw tables)
-  6. wren dry-plan --sql '...'              # validate non-trivial fallback SQL
-  7. wren query --sql '...'                 # execute fallback SQL
-  8. answer in natural language
+  6. Otherwise, write SQL using model names (not raw tables), following any graph-selected path
+  7. wren dry-plan --sql '...'              # validate non-trivial fallback SQL
+  8. wren query --sql '...'                 # execute fallback SQL
+  9. answer in natural language
 
 TASK TYPE B — explore / understand the project:
   1. wren skills list
@@ -22,7 +28,8 @@ TASK TYPE B — explore / understand the project:
 Constraints:
 - use model names, never invent column names (verify via wren context show)
 - use stable cube/member names in commands; labels and synonyms are discovery metadata only
-- prefer a matching cube for standard aggregate questions; use SQL when no cube covers the request
+- graph edges come only from relationships.yml; never invent a join omitted from graph explain
+- prefer graph resolution when graph artifacts exist; keep Cube as the compatible fixed-query fallback
 - never ask for credentials in chat — they go through .env
 
 User question: <USER_PROMPT>

@@ -277,6 +277,7 @@ Cube can reference the metric by name.
 name: total_revenue
 expression: SUM(amount)
 type: DOUBLE
+master_model: fact_ad_sales
 label: 广告销售额
 description: 归因给广告的销售金额总和。
 synonyms: [销售额, 广告收入]
@@ -301,6 +302,7 @@ Here `order_count` is another global metric, defined separately with
 | `name` | yes | Globally unique stable technical name; must match the directory name. |
 | `expression` | yes | Aggregation expression or expression over other global metric names. |
 | `type` | yes | Result type emitted into the runtime Cube measure. |
+| `master_model` | no | Authoritative model/view for this metric's Graph Query binding. The model must expose every atomic field required by the expanded expression. |
 | `label` | no | Human-readable display label. |
 | `description` | no | Precise business definition and scope. |
 | `synonyms[]` | no | Unique natural-language discovery terms. |
@@ -310,6 +312,12 @@ recursively expand metric dependencies, and verify that every atomic field is
 exposed by each referencing Cube's `base_object`. Missing fields, dependency
 cycles, duplicate metric names, unknown Cube metric references, and unprovable
 wildcard View projections are build-blocking errors.
+
+`master_model` is graph-only governance metadata. `wren graph build` preserves
+all compatible bindings for lineage, marks the selected binding with
+`isMaster`, and exposes only that binding to graph query planning. It does not
+create a relationship edge and is stripped when a global metric is expanded
+into the legacy Cube/MDL runtime object. Inline Cube measures do not accept it.
 
 Top-level `metrics/` must not be confused with `knowledge/metrics/`.
 `knowledge/metrics/` is optional Markdown business context for agents; it does
@@ -326,6 +334,7 @@ a field directly or derive a new attribute with SQL:
 name: customer_tier
 expression: CASE WHEN lifetime_value >= 10000 THEN 'VIP' ELSE 'STANDARD' END
 type: VARCHAR
+master_model: dim_customer
 label: 客户分层
 description: 按客户历史价值划分的业务层级。
 synonyms: [客户等级, 会员层级]
@@ -336,6 +345,7 @@ synonyms: [客户等级, 会员层级]
 | `name` | yes | Globally unique stable technical name; must match the directory name. |
 | `expression` | yes | Direct field mapping or derived row-level SQL expression. |
 | `type` | yes | Result type emitted into the runtime Cube dimension. |
+| `master_model` | no | Authoritative model/view for this dimension's Graph Query binding. The model must expose every atomic field required by the expression. |
 | `label` | no | Human-readable display label. |
 | `description` | no | Precise business meaning and value scope. |
 | `synonyms[]` | no | Unique natural-language discovery terms. |
@@ -346,6 +356,14 @@ granularity. The compiler parses every expression and verifies that all atomic
 fields exist on the Cube's `base_object`. Duplicate names, unknown references,
 reuse in both roles within one Cube, missing fields, and wildcard View
 projections that cannot prove their output columns are build-blocking errors.
+
+For graph queries, `master_model` resolves the case where the same global
+dimension can bind to several nodes. The configured model becomes the only
+queryable binding while the other bindings remain visible as lineage. The
+legacy `relationships.yml > graph > master_data.attributes` form is still
+accepted; declaring both forms with different models fails graph compilation.
+Like metrics, the field never enters Cube MDL and is not valid on inline Cube
+dimensions.
 
 ## Cubes (`cubes/<name>/metadata.yml`)
 

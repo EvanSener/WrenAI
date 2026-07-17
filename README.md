@@ -170,6 +170,133 @@ wren ask "<question>" --direct     # wrap a question for a stronger agent
 
 Fast at first. Deep when you need it. Always reviewable and Git-friendly.
 
+## Semantic model graph (experimental)
+
+`wren graph` is an additive, graph-only workflow for projects that need to
+combine governed metrics, dimensions, raw fields, and derived calculations
+across existing model relationships. It does not change `wren context build`,
+Cube compilation, or the MDL query path.
+
+Relationship edges still come only from `relationships.yml > relationships`.
+An optional sibling `graph` object can set the fast-discovery hop limit,
+relationship roles, metric additivity, and verified Bridge/Allocation
+policies. It never creates an edge:
+
+```yaml
+graph:
+  max_hops: 2
+  relationship_roles:
+    orders_billing_customer: billing_customer
+  metric_policies:
+    inventory_balance:
+      additivity: semi_additive
+      blocked_dimensions: [ds]
+
+relationships:
+  # Existing Wren relationships remain unchanged.
+```
+
+Global Metrics and Dimensions can independently declare their authoritative
+Graph Query binding. This is optional graph-only metadata and never enters the
+legacy Cube/MDL wire format:
+
+```yaml
+# dimensions/tenant/metadata.yml (metrics use the same field)
+name: tenant
+expression: tenant_id
+type: STRING
+master_model: dim_tenant
+```
+
+The graph compiler validates that the model exists and exposes every atomic
+field required by the member expression. Other compatible bindings remain in
+the graph for lineage, but Queryability and all planners use the master binding.
+The older `graph.master_data.attributes` dimension setting remains readable for
+backward compatibility; conflicting old and new declarations fail closed.
+
+```bash
+wren graph build
+wren graph show
+wren graph resolve "revenue by customer region" --output json
+wren graph explain --question "revenue by customer region" --output json
+wren graph query --question "revenue by customer region"
+wren graph discover --anchor fact_orders
+wren graph explain --source fact_orders --metrics revenue --dimensions tenant
+wren graph query --source fact_orders --metrics revenue --dimensions tenant
+```
+
+The question frontend resolves global Metric and Dimension nodes through the
+Ontology sidecar, selects a governed MetricBinding, then finds a unique safe
+path from `relationships.yml`. It compiles to the same versioned
+`GraphQueryRequest` used by structured callers. Equal source evidence, role or
+path ambiguity, unknown dimensions, and implicit 1:M traversal fail closed.
+
+For arbitrary-depth paths, fanout, raw `model.field` attributes, derived
+calculations, or multiple facts, put a structured request in YAML or JSON:
+
+```yaml
+schemaVersion: 1
+anchorModel: fact_orders
+maxDepth: 6
+facts:
+  - sourceModel: fact_orders
+    metrics: [revenue, order_count]
+dimensions: [tenant]
+attributes:
+  - model: dim_region
+    field: region_name
+    alias: region
+    relationshipPath: [orders_tenant, tenant_region]
+calculations:
+  - name: enterprise_region
+    kind: dimension
+    expression: CASE WHEN fact_orders.amount > 100 AND dim_region.tier = 'enterprise' THEN 'Y' ELSE 'N' END
+    inputs:
+      - {model: fact_orders, field: amount}
+      - model: dim_region
+        field: tier
+        relationshipPath: [orders_tenant, tenant_region]
+  - name: revenue_per_order
+    kind: post_metric
+    expression: revenue / NULLIF(order_count, 0)
+```
+
+```bash
+wren graph explain --request graph_queries/orders_by_region.yml --output json
+wren graph query --request graph_queries/orders_by_region.yml
+```
+
+Traversal is cycle-safe and can reach any selected path or leaf within
+`maxDepth`; multiple valid paths require `pathHints`. `includeReachable` lists
+the reachable virtual-wide-table schema but does not join the whole graph.
+Cross-node row calculations declare every `model.field` through `inputs`;
+safe leaf fields may also feed aggregate metrics, while `post_metric` runs only
+after fact aggregation and multi-fact Grain merging.
+Verified M:1/1:1 paths use direct joins, 1:M paths pre-aggregate the fact and
+deduplicate the mapping only after an explicit `fanoutMode: repeat`
+acknowledgement (or governed allocation), multiple facts aggregate independently and merge on a
+common Grain, and M:N paths require a compiled Bridge plus Allocation policy.
+Unknown cardinality, missing Grain, ambiguous paths, and incompatible
+additivity remain fail-closed.
+
+`wren graph query` is compile-only: it returns warehouse SQL and does not bypass
+the existing Wren execution, access-control, or query-governance path.
+
+The graph build also emits an ontology sidecar with labels, descriptions,
+synonyms, entities, grains, bindings, and Cube hierarchies. It can exchange an
+Apache Ossie projection and be inspected through a deliberately read-only
+Cypher-style subset:
+
+```bash
+wren graph ontology build
+wren graph ontology export-osi --output target/ontology.osi.yml
+wren graph inspect --artifact ontology \
+  --query "MATCH (m:METRIC)-[r:METRIC_BINDING]->(d:DATASET) RETURN d.name, m.name LIMIT 10"
+```
+
+See [the semantic graph and virtual wide table design](docs/semantic-graph-virtual-wide-table.md)
+for planner semantics and safety boundaries.
+
 ## What's Included
 
 - **Modeling Definition Language (MDL)**: models, columns, relationships, views, cubes, metrics, row-level / column-level access control (RLAC / CLAC)
@@ -215,6 +342,13 @@ experience, see [Wren AI Commercial](https://getwren.ai).
 ## Contributing
 
 We build in the open. Issues, PRs, connector contributions, SDK integrations, docs fixes are all welcome.
+
+This repository uses a project-local `openspec/` for new features and larger
+multi-file changes. Create proposal/spec/design/task artifacts under
+`openspec/changes/` before implementation; stable capability specifications
+live under `openspec/specs/`. The `/opsx-propose`, `/opsx-explore`,
+`/opsx-apply`, and `/opsx-archive` workflows correspond to proposing,
+researching, applying, and archiving a change.
 
 - [Contributor guide](./CONTRIBUTING.md)
 - [Connector ecosystem program](./docs/contributing-a-connector.md): three-tier ownership (official, community-blessed, community-owned)

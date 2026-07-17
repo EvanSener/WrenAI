@@ -1,0 +1,28 @@
+schema: spec-driven-zh
+
+context: |
+  Project: WrenAI
+  Runtime: Python 3.11+ CLI/SDK, Rust wren-core, Apache DataFusion
+  Key modules:
+    - core/wren/src/wren
+    - core/wren-core
+    - core/wren-core-base
+  Conventions:
+    - 用户面向文档默认使用简体中文。
+    - 代码、命令、路径、schema ID 和结构标记保持工具要求的原格式。
+    - 新能力必须保持现有 context、cube 和查询路径向后兼容。
+  Constraints:
+    - Python SDK 使用 core/wren 自己的 uv、pytest 和 Ruff 配置。
+    - 图关系的唯一事实源为 Wren 项目的 relationships.yml。
+    - 不修改运行产物、缓存和自动生成文件，除非任务明确要求。
+
+rules:
+  proposal:
+    - 默认使用简体中文并说明兼容性边界。
+  specs:
+    - 保留 OpenSpec 结构标记原样。
+  design:
+    - 明确 Python 元数据编译与 Rust 执行边界。
+  tasks:
+    - 每项任务必须可执行、可验证。
+

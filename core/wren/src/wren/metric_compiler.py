@@ -26,7 +26,7 @@ from sqlglot.errors import ParseError
 from wren.mdl.cte_rewriter import get_sqlglot_dialect
 from wren.model.data_source import DataSource
 
-_METRIC_FIELDS = frozenset(
+_METRIC_RUNTIME_FIELDS = frozenset(
     {
         "name",
         "expression",
@@ -36,6 +36,7 @@ _METRIC_FIELDS = frozenset(
         "synonyms",
     }
 )
+_GLOBAL_METRIC_FIELDS = _METRIC_RUNTIME_FIELDS | {"master_model"}
 _REQUIRED_METRIC_FIELDS = ("name", "expression", "type")
 
 
@@ -286,7 +287,7 @@ def _global_metric_registry(
     for index, metric in enumerate(metrics):
         source = metric.get("_source_file", f"metrics[{index}]")
         path = f"metrics/{source}"
-        _validate_metric_shape(metric, path, issues)
+        _validate_metric_shape(metric, path, issues, allow_master_model=True)
         name = metric.get("name")
         if not isinstance(name, str) or not name:
             continue
@@ -312,14 +313,18 @@ def _global_metric_registry(
             continue
         canonical_names[folded] = name
         definitions[name] = _MetricDefinition(
-            _public_metric(metric), path, is_global=True
+            _global_metric(metric), path, is_global=True
         )
 
     return definitions
 
 
 def _validate_metric_shape(
-    metric: dict[str, Any], path: str, issues: list[MetricCompilerIssue]
+    metric: dict[str, Any],
+    path: str,
+    issues: list[MetricCompilerIssue],
+    *,
+    allow_master_model: bool = False,
 ) -> None:
     if "_invalid_value" in metric:
         issues.append(
@@ -340,8 +345,11 @@ def _validate_metric_shape(
                 )
             )
 
+    allowed_fields = (
+        _GLOBAL_METRIC_FIELDS if allow_master_model else _METRIC_RUNTIME_FIELDS
+    )
     unknown = sorted(
-        key for key in metric if not key.startswith("_") and key not in _METRIC_FIELDS
+        key for key in metric if not key.startswith("_") and key not in allowed_fields
     )
     if unknown:
         issues.append(
@@ -350,6 +358,16 @@ def _validate_metric_shape(
                 "METRIC_FIELD_UNKNOWN: unsupported field(s): " + ", ".join(unknown),
             )
         )
+
+    if allow_master_model and "master_model" in metric:
+        master_model = metric.get("master_model")
+        if not isinstance(master_model, str) or not master_model.strip():
+            issues.append(
+                MetricCompilerIssue(
+                    path,
+                    "METRIC_MASTER_MODEL_INVALID: master_model must be a non-empty string",
+                )
+            )
 
     synonyms = metric.get("synonyms")
     if synonyms is not None:
@@ -370,7 +388,19 @@ def _validate_metric_shape(
 
 def _public_metric(metric: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: deepcopy(value) for key, value in metric.items() if key in _METRIC_FIELDS
+        key: deepcopy(value)
+        for key, value in metric.items()
+        if key in _METRIC_RUNTIME_FIELDS
+    }
+
+
+def _global_metric(metric: dict[str, Any]) -> dict[str, Any]:
+    """Preserve graph-only source metadata without leaking it into Cube MDL."""
+
+    return {
+        key: deepcopy(value)
+        for key, value in metric.items()
+        if key in _GLOBAL_METRIC_FIELDS
     }
 
 

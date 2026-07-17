@@ -25,7 +25,7 @@ from wren.metric_compiler import (
     dialect_for,
 )
 
-_DIMENSION_FIELDS = frozenset(
+_DIMENSION_RUNTIME_FIELDS = frozenset(
     {
         "name",
         "expression",
@@ -35,6 +35,7 @@ _DIMENSION_FIELDS = frozenset(
         "synonyms",
     }
 )
+_GLOBAL_DIMENSION_FIELDS = _DIMENSION_RUNTIME_FIELDS | {"master_model"}
 _REQUIRED_DIMENSION_FIELDS = ("name", "expression", "type")
 _CUBE_DIMENSION_KEYS = ("dimensions", "time_dimensions")
 
@@ -265,7 +266,7 @@ def _global_dimension_registry(
     for index, dimension in enumerate(dimensions):
         source = dimension.get("_source_file", f"dimensions[{index}]")
         path = f"dimensions/{source}"
-        _validate_dimension_shape(dimension, path, issues)
+        _validate_dimension_shape(dimension, path, issues, allow_master_model=True)
         name = dimension.get("name")
         if not isinstance(name, str) or not name:
             continue
@@ -290,12 +291,16 @@ def _global_dimension_registry(
             )
             continue
         canonical_names[folded] = name
-        definitions[name] = _DimensionDefinition(_public_dimension(dimension), path)
+        definitions[name] = _DimensionDefinition(_global_dimension(dimension), path)
     return definitions
 
 
 def _validate_dimension_shape(
-    dimension: dict[str, Any], path: str, issues: list[MetricCompilerIssue]
+    dimension: dict[str, Any],
+    path: str,
+    issues: list[MetricCompilerIssue],
+    *,
+    allow_master_model: bool = False,
 ) -> None:
     if "_invalid_value" in dimension:
         issues.append(
@@ -315,10 +320,13 @@ def _validate_dimension_shape(
                 )
             )
 
+    allowed_fields = (
+        _GLOBAL_DIMENSION_FIELDS if allow_master_model else _DIMENSION_RUNTIME_FIELDS
+    )
     unknown = sorted(
         key
         for key in dimension
-        if not key.startswith("_") and key not in _DIMENSION_FIELDS
+        if not key.startswith("_") and key not in allowed_fields
     )
     if unknown:
         issues.append(
@@ -327,6 +335,16 @@ def _validate_dimension_shape(
                 "DIMENSION_FIELD_UNKNOWN: unsupported field(s): " + ", ".join(unknown),
             )
         )
+
+    if allow_master_model and "master_model" in dimension:
+        master_model = dimension.get("master_model")
+        if not isinstance(master_model, str) or not master_model.strip():
+            issues.append(
+                MetricCompilerIssue(
+                    path,
+                    "DIMENSION_MASTER_MODEL_INVALID: master_model must be a non-empty string",
+                )
+            )
 
     synonyms = dimension.get("synonyms")
     if synonyms is not None:
@@ -384,7 +402,17 @@ def _public_dimension(dimension: dict[str, Any]) -> dict[str, Any]:
     return {
         key: deepcopy(value)
         for key, value in dimension.items()
-        if key in _DIMENSION_FIELDS
+        if key in _DIMENSION_RUNTIME_FIELDS
+    }
+
+
+def _global_dimension(dimension: dict[str, Any]) -> dict[str, Any]:
+    """Preserve graph-only source metadata without leaking it into Cube MDL."""
+
+    return {
+        key: deepcopy(value)
+        for key, value in dimension.items()
+        if key in _GLOBAL_DIMENSION_FIELDS
     }
 
 
